@@ -24,6 +24,5 @@ cols = st.columns(4)
 for i, (icon, name, desc, page) in enumerate(tools):
     with cols[i % 4]:
         with st.container(border=True):
-            st.subheader(f"{icon} {name}")
-            st.markdown(desc)
-            st.page_link(f"pages/{page}.py", label=f"进入 {name}", icon=icon)
+            st.page_link(f"pages/{page}.py", label=f"**{icon} {name}**", use_container_width=True)
+            st.caption(desc)
