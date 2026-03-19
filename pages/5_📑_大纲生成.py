@@ -11,7 +11,7 @@ import streamlit as st
 st.title("📑 大纲生成")
 st.markdown("输入研究题目，生成结构化论文大纲。")
 
-col_left, col_right = st.columns([1, 2])
+col_left, col_right = st.columns([1, 3])
 
 with col_left:
     st.subheader("输入")

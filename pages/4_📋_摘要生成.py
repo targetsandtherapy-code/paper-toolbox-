@@ -12,7 +12,7 @@ import streamlit as st
 st.title("📋 摘要生成")
 st.markdown("输入论文内容，生成符合学术规范的中英文摘要及关键词。")
 
-col_left, col_right = st.columns([1, 2])
+col_left, col_right = st.columns([1, 3])
 
 with col_left:
     st.subheader("输入")

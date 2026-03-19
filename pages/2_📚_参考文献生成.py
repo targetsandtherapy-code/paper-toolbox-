@@ -16,7 +16,7 @@ st.markdown(r"上传含角标（如 \[1\], \[2,3\], \[4-6\]）的 Word 文档，
 if "stop_flag" not in st.session_state:
     st.session_state.stop_flag = False
 
-col_left, col_right = st.columns([1, 2])
+col_left, col_right = st.columns([1, 3])
 
 with col_left:
     st.subheader("输入设置")

@@ -17,7 +17,7 @@ st.markdown("上传论文和学校模板，一键统一格式。")
 if "template_config" not in st.session_state:
     st.session_state.template_config = None
 
-col_left, col_right = st.columns([1, 2])
+col_left, col_right = st.columns([1, 3])
 
 with col_left:
     st.subheader("文件上传")
