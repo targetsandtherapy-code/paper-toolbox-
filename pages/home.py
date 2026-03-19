@@ -1,43 +1,6 @@
 """首页"""
 import streamlit as st
 
-st.markdown("""
-<style>
-    .tool-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-        gap: 1rem;
-        padding: 0.5rem 0;
-    }
-    .tool-card {
-        border: 1px solid #e0e0e0;
-        border-radius: 12px;
-        padding: 1.2rem;
-        transition: all 0.2s;
-        cursor: pointer;
-        text-decoration: none;
-        color: inherit;
-        display: block;
-    }
-    .tool-card:hover {
-        border-color: #4A90D9;
-        box-shadow: 0 4px 12px rgba(74, 144, 217, 0.15);
-        transform: translateY(-2px);
-    }
-    .tool-card .icon { font-size: clamp(1.5rem, 3vw, 2.5rem); }
-    .tool-card .name {
-        font-size: clamp(0.95rem, 1.5vw, 1.25rem);
-        font-weight: 700;
-        margin: 0.4rem 0 0.2rem;
-    }
-    .tool-card .desc {
-        font-size: clamp(0.75rem, 1.1vw, 0.9rem);
-        color: #888;
-        line-height: 1.4;
-    }
-</style>
-""", unsafe_allow_html=True)
-
 st.title("🎓 论文工具箱")
 st.markdown("一站式论文写作辅助平台 — 点击卡片或使用左侧导航进入工具。")
 st.divider()
@@ -56,9 +19,12 @@ tools = [
     ("📊", "数据分析", "生成统计分析代码 + 结果描述", "11_📊_数据分析"),
 ]
 
-cols = st.columns(4)
-for i, (icon, name, desc, page) in enumerate(tools):
-    with cols[i % 4]:
-        with st.container(border=True):
-            st.page_link(f"pages/{page}.py", label=f"### {icon} {name}", use_container_width=True)
-            st.caption(desc)
+rows = [tools[i:i+3] for i in range(0, len(tools), 3)]
+
+for row in rows:
+    cols = st.columns(3)
+    for j, (icon, name, desc, page) in enumerate(row):
+        with cols[j]:
+            with st.container(border=True):
+                st.page_link(f"pages/{page}.py", label=f"**{icon} {name}**", use_container_width=True)
+                st.caption(desc)
