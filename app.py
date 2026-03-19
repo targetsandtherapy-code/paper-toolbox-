@@ -1,34 +1,23 @@
 """论文工具箱 — 统一入口"""
 import streamlit as st
 
-st.set_page_config(page_title="论文工具箱", page_icon="🎓", layout="wide", initial_sidebar_state="collapsed")
+st.set_page_config(page_title="论文工具箱", page_icon="🎓", layout="wide")
 
-st.sidebar.title("🎓 论文工具箱")
-st.sidebar.markdown("---")
-
-st.title("🎓 论文工具箱")
-st.markdown("一站式论文写作辅助平台 — 点击下方卡片直接进入对应工具。")
-
-st.divider()
+home = st.Page("pages/home.py", title="首页", icon="🎓", default=True)
 
 tools = [
-    ("📝", "格式调整", "上传论文 + 学校模板，一键统一格式", "1_📝_格式调整"),
-    ("📚", "参考文献生成", "角标匹配学术论文，生成 GB/T 7714 格式", "2_📚_参考文献生成"),
-    ("🔍", "查重预检", "知网前自查，标记高风险段落", "3_🔍_查重预检"),
-    ("📋", "摘要生成", "生成中英文摘要及关键词", "4_📋_摘要生成"),
-    ("📑", "大纲生成", "生成结构化论文大纲", "5_📑_大纲生成"),
-    ("🌐", "学术翻译", "中英互译，术语准确", "6_🌐_学术翻译"),
-    ("📄", "开题报告", "生成完整开题报告", "7_📄_开题报告"),
-    ("✏️", "降重改写", "改写段落，降低重复率", "8_✏️_降重改写"),
-    ("📖", "文献综述", "检索文献 + 聚类 + 生成综述", "9_📖_文献综述"),
-    ("🔬", "论文审稿", "逐段审阅逻辑、论述、规范", "10_🔬_论文审稿"),
-    ("📊", "数据分析", "生成统计分析代码 + 结果描述", "11_📊_数据分析"),
+    st.Page("pages/1_📝_格式调整.py", title="格式调整", icon="📝"),
+    st.Page("pages/2_📚_参考文献生成.py", title="参考文献生成", icon="📚"),
+    st.Page("pages/3_🔍_查重预检.py", title="查重预检", icon="🔍"),
+    st.Page("pages/4_📋_摘要生成.py", title="摘要生成", icon="📋"),
+    st.Page("pages/5_📑_大纲生成.py", title="大纲生成", icon="📑"),
+    st.Page("pages/6_🌐_学术翻译.py", title="学术翻译", icon="🌐"),
+    st.Page("pages/7_📄_开题报告.py", title="开题报告", icon="📄"),
+    st.Page("pages/8_✏️_降重改写.py", title="降重改写", icon="✏️"),
+    st.Page("pages/9_📖_文献综述.py", title="文献综述", icon="📖"),
+    st.Page("pages/10_🔬_论文审稿.py", title="论文审稿", icon="🔬"),
+    st.Page("pages/11_📊_数据分析.py", title="数据分析", icon="📊"),
 ]
 
-cols = st.columns(4)
-for i, (icon, name, desc, page) in enumerate(tools):
-    with cols[i % 4]:
-        with st.container(border=True):
-            st.subheader(f"{icon} {name}")
-            st.markdown(desc)
-            st.page_link(f"pages/{page}.py", label=f"进入 {name}", icon=icon)
+pg = st.navigation({"": [home], "工具": tools})
+pg.run()
