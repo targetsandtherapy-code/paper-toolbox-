@@ -91,22 +91,31 @@ class DocParser:
                     grouped[cid] = m
         return dict(sorted(grouped.items()))
 
+    _SKIP_TITLES = {"摘要", "摘  要", "abstract", "目录", "致谢", "参考文献", "附录", "关键词", "keywords"}
+
     def get_title(self) -> str:
         """提取论文标题（取前几个非空段落中最可能是标题的那个）"""
-        for para in self.doc.paragraphs[:10]:
+        for para in self.doc.paragraphs[:15]:
             text = para.text.strip()
             if not text or len(text) < 4:
+                continue
+            if text.lower().replace(" ", "") in {s.replace(" ", "") for s in self._SKIP_TITLES}:
                 continue
             if MARKER_PATTERN.search(text):
                 continue
             if para.style and para.style.name and 'title' in para.style.name.lower():
                 return text
-            if para.style and para.style.name and 'heading' in para.style.name.lower():
-                return text
-        for para in self.doc.paragraphs[:6]:
+        for para in self.doc.paragraphs[:15]:
             text = para.text.strip()
-            if text and len(text) >= 4 and not MARKER_PATTERN.search(text):
-                return text
+            if not text or len(text) < 6 or len(text) > 60:
+                continue
+            if text.lower().replace(" ", "") in {s.replace(" ", "") for s in self._SKIP_TITLES}:
+                continue
+            if MARKER_PATTERN.search(text):
+                continue
+            if text.startswith("关键词") or text.startswith("Keywords"):
+                continue
+            return text
         return ""
 
     def get_full_text(self) -> str:
