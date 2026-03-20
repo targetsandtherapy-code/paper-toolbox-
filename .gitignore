@@ -6,3 +6,4 @@ __pycache__/
 .venv/
 venv/
 cnki_cookies.txt
+cnki_credentials.json

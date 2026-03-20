@@ -171,8 +171,7 @@ def process_paper(
         with ThreadPoolExecutor(max_workers=3) as pool:
             if target_lang == "cn":
                 futures = [
-                    pool.submit(_search_source, cnki, cn_query, year_start, year_end, results_per_source, "CNKI"),
-                    pool.submit(_search_source, crossref, cn_query, year_start, year_end, results_per_source, "CrossRef-CN"),
+                    pool.submit(_search_source, cnki, cn_query, year_start, year_end, results_per_source * 2, "CNKI"),
                 ]
             else:
                 futures = [
