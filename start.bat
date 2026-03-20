@@ -17,20 +17,21 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: 检查依赖
-if not exist "venv" (
-    echo [首次运行] 创建虚拟环境...
-    python -m venv venv
-    call venv\Scripts\activate.bat
+:: 检查 streamlit 是否安装
+python -c "import streamlit" >nul 2>&1
+if errorlevel 1 (
     echo [安装依赖] 请稍候...
     pip install -r requirements.txt -q
-) else (
-    call venv\Scripts\activate.bat
 )
+
+:: 清除旧缓存
+if exist "__pycache__" rd /s /q "__pycache__" 2>nul
+if exist "modules\__pycache__" rd /s /q "modules\__pycache__" 2>nul
+if exist "modules\reference\__pycache__" rd /s /q "modules\reference\__pycache__" 2>nul
 
 :: 启动 Streamlit
 echo.
-echo [启动] 正在打开浏览器...
+echo [启动] 正在打开浏览器 http://localhost:8501
 echo [提示] 关闭此窗口即可停止服务
 echo.
 streamlit run app.py --server.port 8501 --browser.gatherUsageStats false
