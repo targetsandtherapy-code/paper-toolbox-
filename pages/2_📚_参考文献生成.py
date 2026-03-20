@@ -113,7 +113,8 @@ with col_right:
 
             progress_bar = st.progress(0)
             status_text = st.empty()
-            log_area = st.empty()
+            log_container = st.container(height=300)
+            log_area = log_container.empty()
             log_lines = []
 
             status_text.info(f"正在处理: {file_label}...")

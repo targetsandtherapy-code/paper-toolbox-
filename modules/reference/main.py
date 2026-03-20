@@ -836,7 +836,7 @@ def process_paper(
                 best.title,
                 best.journal or "",
                 claim_type=ct,
-                match_tier=verify_meta.get("match_tier") or "",
+                match_tier="",
                 claim_confidence=getattr(analysis, "claim_confidence", None),
             )
         if not best:
