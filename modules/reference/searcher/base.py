@@ -33,6 +33,10 @@ class Paper:
     citation_count: Optional[int] = None
     url: Optional[str] = None
     source: str = ""  # 数据来源标识
+    # GB/T 7714：默认 [J]；政府网文件等用 EB/OL
+    reference_type: str = "J"
+    eb_publish_date: Optional[str] = None  # 电子文献更新/发布日期，如 2016-10-25
+    access_date: Optional[str] = None  # 引用日期；格式化时若为 None 可用当天
 
     @property
     def doi_url(self) -> Optional[str]:

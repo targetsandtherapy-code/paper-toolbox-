@@ -18,11 +18,18 @@ def _tokenize(text: str) -> set[str]:
     return tokens
 
 
-def fast_rank(context: str, keywords: list[str], candidates: list[Paper], top_k: int = 3,
-              field_cores: set[str] | None = None) -> list[Paper]:
+def fast_rank(
+    context: str,
+    keywords: list[str],
+    candidates: list[Paper],
+    top_k: int = 3,
+    field_cores: set[str] | None = None,
+    claim: str = "",
+) -> list[Paper]:
     """基于关键词重叠度 + 被引量 + 核心期刊的快速排序
 
     评分 = 关键词匹配得分(0-70) + 被引量得分(0-20) + 摘要匹配得分(0-10) + 期刊加分
+    claim: 角标论点全文，参与分词以提升与标题/摘要的语义重叠（轻量「语义」proxy）
     """
     if not candidates:
         return []
@@ -31,6 +38,8 @@ def fast_rank(context: str, keywords: list[str], candidates: list[Paper], top_k:
     keyword_tokens = set()
     for kw in keywords:
         keyword_tokens.update(_tokenize(kw))
+    if claim:
+        keyword_tokens.update(_tokenize(claim))
 
     all_tokens = context_tokens | keyword_tokens
 

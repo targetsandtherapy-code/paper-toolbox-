@@ -10,7 +10,7 @@ class CitationMarker:
     """单个引用角标"""
     ids: list[int]           # 角标编号列表，如 [1] → [1], [1,2] → [1,2], [1-3] → [1,2,3]
     paragraph_text: str      # 角标所在段落全文
-    context_before: str      # 角标前的句子/片段
+    context_before: str      # 角标所在完整句（上一句末标点至本句末标点，含角标）
     paragraph_index: int     # 段落在文档中的位置索引
     raw_marker: str          # 原始角标文本，如 "[1]", "[1-3]"
 
@@ -33,20 +33,39 @@ def _expand_marker_ids(raw: str) -> list[int]:
     return sorted(set(ids))
 
 
-def _extract_context_before(text: str, marker_start: int, max_chars: int = 200) -> str:
-    """提取角标前的上下文（取角标前最近的句子）"""
-    before = text[:marker_start].rstrip()
-    if not before:
+# 句末：中文仅「。」、英文仅「.」；分号/叹号/问号等不作为句界（避免半角 ; 误切）
+_SENTENCE_END_RE = re.compile(r"[。.]")
+
+
+def _extract_sentence_containing_marker(
+    text: str,
+    marker_start: int,
+    marker_end: int,
+    max_chars: int = 2000,
+) -> str:
+    """提取角标所在整句：从**上一句**的句末（仅「。」或「.」）之后起，到**本句**的「。」或「.」为止（含角标及角标后同句文字）。
+
+    分号、逗号、叹号、问号、换行均不作为句界。若本句无后续「。」/「.」（如段末），则取到段落末尾。过长时以角标为中心截断到 max_chars。
+    """
+    before = text[:marker_start]
+    break_ends = [m.end() for m in _SENTENCE_END_RE.finditer(before)]
+    sent_start = break_ends[-1] if break_ends else 0
+
+    after = text[marker_end:]
+    m = _SENTENCE_END_RE.search(after)
+    sent_end = marker_end + m.end() if m else len(text)
+
+    sent = text[sent_start:sent_end].strip()
+    if not sent:
         return ""
 
-    # 尝试找最近的句号/分号等分隔符，取最后一个完整句子
-    sent_breaks = [m.end() for m in re.finditer(r'[。；;！!？?\.\n]', before)]
-    if sent_breaks:
-        last_break = sent_breaks[-1]
-        if marker_start - last_break < max_chars:
-            return before[last_break:].strip()
+    if len(sent) > max_chars:
+        rel = marker_start - sent_start
+        half = max_chars // 2
+        lo = max(0, min(rel - half, len(sent) - max_chars))
+        sent = sent[lo : lo + max_chars].strip()
 
-    return before[-max_chars:].strip()
+    return sent
 
 
 class DocParser:
@@ -69,7 +88,9 @@ class DocParser:
             for match in MARKER_PATTERN.finditer(text):
                 raw_marker = match.group(0)
                 ids = _expand_marker_ids(raw_marker)
-                context_before = _extract_context_before(text, match.start())
+                context_before = _extract_sentence_containing_marker(
+                    text, match.start(), match.end()
+                )
 
                 markers.append(CitationMarker(
                     ids=ids,

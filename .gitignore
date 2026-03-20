@@ -7,3 +7,4 @@ __pycache__/
 venv/
 cnki_cookies.txt
 cnki_credentials.json
+logs/

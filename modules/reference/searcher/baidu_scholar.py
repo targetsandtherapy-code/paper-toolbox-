@@ -2,7 +2,10 @@
 import requests
 from bs4 import BeautifulSoup
 from .base import BaseSearcher, Paper
-from modules.reference.config import BAIDU_SCHOLAR_URL, REQUEST_TIMEOUT
+from modules.reference.config import REQUEST_TIMEOUT
+
+# 主流程已不调用本模块；保留类供自行实验。URL 不再写入根 config。
+BAIDU_SCHOLAR_SEARCH_URL = "https://xueshu.baidu.com/s"
 
 
 class BaiduScholarSearcher(BaseSearcher):
@@ -33,7 +36,7 @@ class BaiduScholarSearcher(BaseSearcher):
 
         try:
             resp = session.get(
-                BAIDU_SCHOLAR_URL,
+                BAIDU_SCHOLAR_SEARCH_URL,
                 params=params,
                 headers=self.HEADERS,
                 timeout=REQUEST_TIMEOUT,

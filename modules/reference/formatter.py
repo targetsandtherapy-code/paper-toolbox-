@@ -1,14 +1,21 @@
 """GB/T 7714-2015 参考文献格式化模块"""
+from datetime import date
+
 from modules.reference.searcher.base import Paper
 
 
+def _is_chinese_name(name: str) -> bool:
+    return any('\u4e00' <= c <= '\u9fff' for c in (name or ""))
+
+
 def format_authors_gbt(authors: list[str], max_authors: int = 3) -> str:
-    """格式化作者列表（国标格式）"""
+    """格式化作者列表（国标格式：中文用「等」，英文用「et al.」）"""
     if not authors:
         return ""
     if len(authors) <= max_authors:
         return ", ".join(authors)
-    return ", ".join(authors[:max_authors]) + ", 等"
+    suffix = ", 等" if _is_chinese_name(authors[0]) else ", et al."
+    return ", ".join(authors[:max_authors]) + suffix
 
 
 def format_paper_gbt7714(index: int, paper: Paper) -> str:
@@ -16,22 +23,48 @@ def format_paper_gbt7714(index: int, paper: Paper) -> str:
 
     期刊论文格式:
     [序号] 作者. 题名[J]. 刊名, 年, 卷(期): 页码. DOI:xxx.
+
+    电子公告/在线文献:
+    [序号] 作者. 题名[EB/OL]. 出版者/网站. (更新日期)[引用日期]. URL.
     """
-    parts = []
+    ref_t = getattr(paper, "reference_type", None) or "J"
+    title = paper.title.rstrip(".")
+    parts = [f"[{index}]"]
 
-    # [序号]
-    parts.append(f"[{index}]")
+    if ref_t == "EB/OL":
+        authors_str = format_authors_gbt(paper.authors)
+        if authors_str:
+            parts.append(f" {authors_str}.")
+        parts.append(f" {title}[EB/OL].")
+        if paper.journal:
+            parts.append(f" {paper.journal}.")
+        eb_pub = getattr(paper, "eb_publish_date", None) or ""
+        acc = getattr(paper, "access_date", None) or date.today().isoformat()
+        if eb_pub:
+            parts.append(f" ({eb_pub})[{acc}].")
+        else:
+            parts.append(f" [{acc}].")
+        link = paper.url or (f"https://doi.org/{paper.doi}" if paper.doi else "")
+        if link:
+            parts.append(f" {link}.")
+        return "".join(parts)
 
-    # 作者
+    if ref_t == "M":
+        authors_str = format_authors_gbt(paper.authors)
+        if authors_str:
+            parts.append(f" {authors_str}.")
+        parts.append(f" {title}[M].")
+        if paper.year:
+            parts.append(f" {paper.year}.")
+        # 无出版者时年可单独出现；出版地/出版者建议人工补全
+        return "".join(parts)
+
+    # --- 期刊 [J] ---
     authors_str = format_authors_gbt(paper.authors)
     if authors_str:
         parts.append(f" {authors_str}.")
-    
-    # 题名[J]
-    title = paper.title.rstrip(".")
     parts.append(f" {title}[J].")
 
-    # 刊名, 年
     if paper.journal:
         parts.append(f" {paper.journal},")
     if paper.year:
@@ -39,7 +72,6 @@ def format_paper_gbt7714(index: int, paper: Paper) -> str:
     elif paper.journal:
         parts[-1] = parts[-1].rstrip(",") + "."
 
-    # DOI
     if paper.doi:
         parts.append(f" DOI: {paper.doi}.")
 
@@ -72,18 +104,39 @@ def format_reference_list_markdown(papers: dict[int, Paper]) -> str:
         authors_str = format_authors_gbt(paper.authors)
         title = paper.title.rstrip(".")
 
+        ref_t = getattr(paper, "reference_type", None) or "J"
         entry = f"[{idx}] "
-        if authors_str:
-            entry += f"{authors_str}. "
-        entry += f"{title}[J]. "
-        if paper.journal:
-            entry += f"{paper.journal}, "
-        if paper.year:
-            entry += f"{paper.year}. "
+        if ref_t == "EB/OL":
+            if authors_str:
+                entry += f"{authors_str}. "
+            entry += f"{title}[EB/OL]. "
+            if paper.journal:
+                entry += f"{paper.journal}. "
+            eb_pub = getattr(paper, "eb_publish_date", None) or ""
+            acc = getattr(paper, "access_date", None) or date.today().isoformat()
+            entry += f"({eb_pub})[{acc}]. " if eb_pub else f"[{acc}]. "
+            link = paper.url or ""
+            if link:
+                entry += f"[链接]({link})"
+        elif ref_t == "M":
+            if authors_str:
+                entry += f"{authors_str}. "
+            entry += f"{title}[M]. "
+            if paper.year:
+                entry += f"{paper.year}. "
+            entry += "（出版地/出版者待补）"
+        else:
+            if authors_str:
+                entry += f"{authors_str}. "
+            entry += f"{title}[J]. "
+            if paper.journal:
+                entry += f"{paper.journal}, "
+            if paper.year:
+                entry += f"{paper.year}. "
 
-        if paper.doi:
-            doi_url = f"https://doi.org/{paper.doi}"
-            entry += f"DOI: [{paper.doi}]({doi_url})"
+            if paper.doi:
+                doi_url = f"https://doi.org/{paper.doi}"
+                entry += f"DOI: [{paper.doi}]({doi_url})"
 
         lines.append(entry)
         lines.append("")
