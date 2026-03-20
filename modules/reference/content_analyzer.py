@@ -34,18 +34,25 @@ class ContentAnalyzer:
 
 分析要求：
 1. 仔细阅读角标[{marker_id}]紧邻的前文，判断该引用具体要支撑什么论点
-2. 关键词需同时兼顾：(a) 论文标题所涉及的研究领域/主题，(b) 该角标处的具体论点
-3. 搜索查询语句要尽可能具体，包含该论点涉及的核心概念、变量、方法等，同时限定在论文标题所属的研究领域内
+2. 关键词要具体到该论点涉及的核心变量/概念，必须能搜到**实证研究论文**（不是教学论文、综述教材）
+3. 搜索查询语句用2-3个最核心的词，不要用冷僻术语或人名
+
+关键词生成规则：
+- 中文关键词必须是知网能搜到的常用学术术语
+- 不要包含人名（如Cooper、Maslach、骆宏等）
+- 不要包含具体量表名缩写（如SPS-6、MBI-GS等），改用通俗描述
+- 每个关键词2-4个字，不要太长
+- 搜索查询用空格分隔2-3个核心词即可
 
 请严格按以下 JSON 格式返回（不要添加任何其他文字）：
 {{
-  "core_topic": "该引用支撑的核心主题（1句话，既要体现论文领域又要具体到角标处论点）",
+  "core_topic": "该引用支撑的核心主题（1句话）",
   "research_method": "涉及的研究方法/技术（如有）",
-  "key_claim": "该引用想要证明的关键论点（必须是角标前文字的精确论点，但需限定在论文研究领域内）",
+  "key_claim": "该引用想要证明的关键论点（必须是角标前文字的精确论点）",
   "cn_keywords": ["中文关键词1", "中文关键词2", "中文关键词3", "中文关键词4", "中文关键词5"],
   "en_keywords": ["English keyword 1", "English keyword 2", "English keyword 3", "English keyword 4", "English keyword 5"],
-  "search_query_cn": "针对该具体论点的中文学术搜索查询（限定在论文研究领域内）",
-  "search_query_en": "Specific English academic search query for this exact claim within the paper's domain"
+  "search_query_cn": "2-3个核心中文词，空格分隔（如：隐性缺勤 护士 影响因素）",
+  "search_query_en": "2-3 core English terms, space separated (e.g., presenteeism nurses burnout)"
 }}"""
 
         import time as _time

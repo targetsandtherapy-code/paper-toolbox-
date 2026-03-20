@@ -30,6 +30,23 @@ def _is_chinese_title(title: str) -> bool:
     return cn_chars / max(len(title), 1) > 0.3
 
 
+_IRRELEVANT_KEYWORDS = {
+    "教学", "课程思政", "课程教学", "教学改革", "教学实践", "教学模式",
+    "教学设计", "教学探索", "教学中的应用", "体验式教学", "对分课堂",
+    "翻转课堂", "混合式教学", "OBE理念", "PBL教学", "课程建设",
+    "教材", "慕课", "课堂教学", "教学质量", "教育评价",
+}
+
+
+def _is_irrelevant_paper(paper: Paper) -> bool:
+    """过滤明显不相关的论文（教学类等）"""
+    title = paper.title or ""
+    for kw in _IRRELEVANT_KEYWORDS:
+        if kw in title:
+            return True
+    return False
+
+
 def deduplicate_papers(papers: list[Paper]) -> list[Paper]:
     seen_dois: dict[str, Paper] = {}
     seen_titles: dict[str, Paper] = {}
@@ -215,6 +232,7 @@ def process_paper(
                 p for p in candidates
                 if not (p.doi and p.doi.lower() in used_dois)
                 and p.title.lower().strip()[:50] not in used_titles
+                and not _is_irrelevant_paper(p)
             ]
 
             if target_lang == "cn":
@@ -380,6 +398,7 @@ def process_paper(
                 p for p in rescue_cands
                 if not (p.doi and p.doi.lower() in used_dois)
                 and p.title.lower().strip()[:50] not in used_titles
+                and not _is_irrelevant_paper(p)
             ]
             if target_lang_m == "cn":
                 lang_avail = [p for p in available if _is_chinese_title(p.title)]
