@@ -120,17 +120,26 @@ with col_right:
 
             def make_log_callback(lines_ref, log_widget):
                 def cb(msg):
-                    if st.session_state.stop_flag:
-                        raise InterruptedError("用户停止")
+                    try:
+                        if st.session_state.stop_flag:
+                            raise InterruptedError("用户停止")
+                    except AttributeError:
+                        pass
                     lines_ref.append(msg)
-                    log_widget.code("\n".join(lines_ref[-20:]), language=None)
+                    try:
+                        log_widget.code("\n".join(lines_ref[-20:]), language=None)
+                    except Exception:
+                        pass
                 return cb
 
             def make_progress_callback(bar, status_widget):
                 def cb(current, total, text):
-                    pct = int(current / max(total, 1) * 100)
-                    bar.progress(min(pct, 100))
-                    status_widget.info(text)
+                    try:
+                        pct = int(current / max(total, 1) * 100)
+                        bar.progress(min(pct, 100))
+                        status_widget.info(text)
+                    except Exception:
+                        pass
                 return cb
 
             log_cb = make_log_callback(log_lines, log_area)
