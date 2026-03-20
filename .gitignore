@@ -5,3 +5,4 @@ __pycache__/
 *.tmp
 .venv/
 venv/
+cnki_cookies.txt

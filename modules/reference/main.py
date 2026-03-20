@@ -14,6 +14,7 @@ from modules.reference.content_analyzer import ContentAnalyzer
 from modules.reference.searcher.crossref import CrossRefSearcher
 from modules.reference.searcher.openalex import OpenAlexSearcher
 from modules.reference.searcher.pubmed import PubMedSearcher
+from modules.reference.searcher.cnki import CNKISearcher
 from modules.reference.searcher.base import Paper
 from modules.reference.fast_ranker import fast_rank
 from modules.reference.relevance_ranker import RelevanceRanker
@@ -122,6 +123,7 @@ def process_paper(
     crossref = CrossRefSearcher()
     openalex = OpenAlexSearcher()
     pubmed = PubMedSearcher()
+    cnki = CNKISearcher()
     ranker = RelevanceRanker()
 
     references: dict[int, Paper] = {}
@@ -169,8 +171,8 @@ def process_paper(
         with ThreadPoolExecutor(max_workers=3) as pool:
             if target_lang == "cn":
                 futures = [
+                    pool.submit(_search_source, cnki, cn_query, year_start, year_end, results_per_source, "CNKI"),
                     pool.submit(_search_source, crossref, cn_query, year_start, year_end, results_per_source, "CrossRef-CN"),
-                    pool.submit(_search_source, openalex, cn_query, year_start, year_end, results_per_source, "OpenAlex-CN"),
                 ]
             else:
                 futures = [
