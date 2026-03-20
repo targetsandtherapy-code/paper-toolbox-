@@ -207,18 +207,27 @@ class CNKISearcher(BaseSearcher):
             return
 
         logger.info("[CNKI] Cookie 已失效，尝试自动登录刷新...")
-        cred_file = CNKI_CRED_FILE
-        if not cred_file.exists():
-            logger.warning("[CNKI] 未找到 %s，无法自动刷新 Cookie。"
-                           "请手动更新 cnki_cookies.txt", cred_file)
-            return
-
+        username, password = "", ""
+        # 优先从 Streamlit Secrets 读（部署环境）
         try:
-            cred = json.loads(cred_file.read_text(encoding="utf-8"))
-            username = cred.get("username", "")
-            password = cred.get("password", "")
+            import streamlit as st
+            username = st.secrets.get("CNKI_USERNAME", "")
+            password = st.secrets.get("CNKI_PASSWORD", "")
         except Exception:
-            logger.warning("[CNKI] 读取凭据文件失败")
+            pass
+        # 其次从本地凭据文件读
+        if not username or not password:
+            cred_file = CNKI_CRED_FILE
+            if cred_file.exists():
+                try:
+                    cred = json.loads(cred_file.read_text(encoding="utf-8"))
+                    username = cred.get("username", "")
+                    password = cred.get("password", "")
+                except Exception:
+                    pass
+        if not username or not password:
+            logger.warning("[CNKI] 未找到 CNKI 凭据（Secrets 或 cnki_credentials.json），"
+                           "无法自动刷新 Cookie")
             return
 
         if not username or not password:
