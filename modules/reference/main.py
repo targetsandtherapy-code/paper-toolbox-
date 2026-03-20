@@ -185,84 +185,88 @@ def process_paper(
                 log(f"  分析失败: {e}")
                 continue
 
-        cn_query = " ".join(analysis.cn_keywords[:3])
-        en_query = " ".join(analysis.en_keywords[:3])
+        def _try_search_and_rank(cur_analysis, attempt_label=""):
+            """搜索 + 排序 + 选最佳，返回 Paper 或 None"""
+            cn_q = " ".join(cur_analysis.cn_keywords[:3])
+            en_q = " ".join(cur_analysis.en_keywords[:3])
 
-        # 根据目标语言选择数据源
-        candidates = []
-        with ThreadPoolExecutor(max_workers=3) as pool:
+            candidates = []
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                if target_lang == "cn":
+                    futures = [
+                        pool.submit(_search_cnki, cnki, cn_q, year_start, year_end, results_per_source * 2, cn_cores, "CNKI"),
+                    ]
+                else:
+                    futures = [
+                        pool.submit(_search_source, openalex, en_q, year_start, year_end, results_per_source, "OpenAlex-EN"),
+                        pool.submit(_search_source, pubmed, en_q, year_start, year_end, results_per_source, "PubMed-EN"),
+                        pool.submit(_search_source, crossref, en_q, year_start, year_end, results_per_source, "CrossRef-EN"),
+                    ]
+                for f in as_completed(futures):
+                    label, papers = f.result()
+                    if papers:
+                        log(f"  {label}: {len(papers)}篇")
+                        candidates.extend(papers)
+
+            if not candidates:
+                return None
+
+            candidates = deduplicate_papers(candidates)
+            candidates = [
+                p for p in candidates
+                if not (p.doi and p.doi.lower() in used_dois)
+                and p.title.lower().strip()[:50] not in used_titles
+            ]
+
             if target_lang == "cn":
-                futures = [
-                    pool.submit(_search_cnki, cnki, cn_query, year_start, year_end, results_per_source * 2, cn_cores, "CNKI"),
-                ]
+                lang_filtered = [p for p in candidates if _is_chinese_title(p.title)]
+                if not lang_filtered:
+                    lang_filtered = candidates
             else:
-                futures = [
-                    pool.submit(_search_source, openalex, en_query, year_start, year_end, results_per_source, "OpenAlex-EN"),
-                    pool.submit(_search_source, pubmed, en_query, year_start, year_end, results_per_source, "PubMed-EN"),
-                    pool.submit(_search_source, crossref, en_query, year_start, year_end, results_per_source, "CrossRef-EN"),
-                ]
-            for f in as_completed(futures):
-                label, papers = f.result()
-                if papers:
-                    log(f"  {label}: {len(papers)}篇")
-                    candidates.extend(papers)
+                lang_filtered = [p for p in candidates if not _is_chinese_title(p.title)]
+                if not lang_filtered:
+                    lang_filtered = candidates
 
-        if not candidates:
-            log(f"  无结果")
-            continue
-
-        # 去重 + 排除已分配
-        candidates = deduplicate_papers(candidates)
-        candidates = [
-            p for p in candidates
-            if not (p.doi and p.doi.lower() in used_dois)
-            and p.title.lower().strip()[:50] not in used_titles
-        ]
-
-        # 按目标语言过滤
-        if target_lang == "cn":
-            lang_filtered = [p for p in candidates if _is_chinese_title(p.title)]
             if not lang_filtered:
-                lang_filtered = candidates
-        else:
-            lang_filtered = [p for p in candidates if not _is_chinese_title(p.title)]
-            if not lang_filtered:
-                lang_filtered = candidates
+                return None
 
-        if not lang_filtered:
-            log(f"  无可用候选")
-            continue
-
-        # 本地预筛 + LLM 精排
-        all_keywords = analysis.cn_keywords + analysis.en_keywords
-        pre_ranked = fast_rank(
-            context=marker.context_before,
-            keywords=all_keywords,
-            candidates=lang_filtered,
-            top_k=5,
-            field_cores=all_field_cores,
-        )
-        try:
-            ranked = ranker.rank(
+            all_kw = cur_analysis.cn_keywords + cur_analysis.en_keywords
+            pre_ranked = fast_rank(
                 context=marker.context_before,
-                claim=analysis.key_claim,
-                candidates=pre_ranked,
-                top_k=max(top_k, 3),
-                paper_title=paper_title,
+                keywords=all_kw,
+                candidates=lang_filtered,
+                top_k=5,
+                field_cores=all_field_cores,
             )
-        except Exception:
-            ranked = pre_ranked[:max(top_k, 3)]
+            try:
+                ranked = ranker.rank(
+                    context=marker.context_before,
+                    claim=cur_analysis.key_claim,
+                    candidates=pre_ranked,
+                    top_k=max(top_k, 3),
+                    paper_title=paper_title,
+                )
+            except Exception:
+                ranked = pre_ranked[:max(top_k, 3)]
 
-        best = None
-        for p in ranked:
-            doi_key = p.doi.lower() if p.doi else None
-            title_key = p.title.lower().strip()[:50]
-            if doi_key and doi_key in used_dois:
-                continue
-            if title_key in used_titles:
-                continue
-            best = p
-            break
+            for p in ranked:
+                doi_key = p.doi.lower() if p.doi else None
+                title_key = p.title.lower().strip()[:50]
+                if doi_key and doi_key in used_dois:
+                    continue
+                if title_key in used_titles:
+                    continue
+                return p
+            return None
+
+        # 第一轮：原始关键词搜索
+        best = _try_search_and_rank(analysis)
+
+        # 第二轮：如果失败，用 LLM 生成更宽泛的关键词重试
+        if not best:
+            log(f"  [重试] 用宽泛关键词...")
+            broad = analyzer.broaden_query(analysis, paper_title=paper_title)
+            best = _try_search_and_rank(broad, "宽泛")
 
         if best:
             references[cid] = best

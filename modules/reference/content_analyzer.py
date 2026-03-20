@@ -80,6 +80,54 @@ class ContentAnalyzer:
             print(f"[ContentAnalyzer] 分析失败: {e}")
             raise
 
+    def broaden_query(self, original: AnalysisResult, paper_title: str = "") -> AnalysisResult:
+        """当原始搜索无结果时，用 LLM 生成更宽泛的搜索词。"""
+        title_hint = f"\n论文标题：{paper_title}" if paper_title else ""
+        prompt = f"""原始搜索未找到相关文献，请生成更宽泛的替代搜索词。
+{title_hint}
+原始论点：{original.key_claim}
+原始中文搜索词：{original.search_query_cn}
+原始英文搜索词：{original.search_query_en}
+原始中文关键词：{', '.join(original.cn_keywords)}
+
+要求：
+1. 去掉过于具体的人名、量表名、限定词
+2. 保留核心概念，用上位概念或同义词替代
+3. 搜索词控制在2-3个核心词，不要太长
+4. 生成3组备选搜索词（从具体到宽泛）
+
+返回 JSON：
+{{
+  "cn_queries": ["备选中文搜索词1", "备选中文搜索词2", "备选中文搜索词3"],
+  "en_queries": ["alternative English query 1", "alternative English query 2", "alternative English query 3"],
+  "cn_keywords": ["宽泛中文关键词1", "宽泛中文关键词2", "宽泛中文关键词3"],
+  "en_keywords": ["broad English keyword 1", "broad English keyword 2", "broad English keyword 3"]
+}}"""
+        try:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "你是学术搜索专家，擅长调整搜索策略。只返回 JSON。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.4,
+                response_format={"type": "json_object"},
+                extra_body={"enable_thinking": False},
+            )
+            data = json.loads(resp.choices[0].message.content.strip())
+            return AnalysisResult(
+                marker_id=original.marker_id,
+                core_topic=original.core_topic,
+                research_method=original.research_method,
+                key_claim=original.key_claim,
+                cn_keywords=data.get("cn_keywords", original.cn_keywords),
+                en_keywords=data.get("en_keywords", original.en_keywords),
+                search_query_cn=data.get("cn_queries", [original.search_query_cn])[0],
+                search_query_en=data.get("en_queries", [original.search_query_en])[0],
+            )
+        except Exception:
+            return original
+
     def batch_analyze(self, markers: list[dict], paper_title: str = "") -> list[AnalysisResult]:
         """批量分析多个角标
         markers: [{"id": "1", "paragraph": "...", "context_before": "..."}, ...]
