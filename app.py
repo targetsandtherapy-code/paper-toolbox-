@@ -4,12 +4,14 @@ from pathlib import Path
 
 st.set_page_config(page_title="论文工具箱", page_icon="🎓", layout="wide")
 
-# 从 Streamlit Secrets 写出 CNKI Cookie 文件（部署环境无法直接上传文件）
+# 从 Streamlit Secrets 写出 CNKI Cookie 文件（部署环境无法直接上传文件；每次启动刷新）
 _cookie_path = Path(__file__).parent / "cnki_cookies.txt"
-if not _cookie_path.exists():
+try:
     _cookie_val = st.secrets.get("CNKI_COOKIES", "")
     if _cookie_val:
-        _cookie_path.write_text(_cookie_val, encoding="utf-8")
+        _cookie_path.write_text(str(_cookie_val), encoding="utf-8")
+except Exception:
+    pass
 
 home = st.Page("pages/home.py", title="首页", icon="🎓", default=True)
 
