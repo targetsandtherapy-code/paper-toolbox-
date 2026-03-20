@@ -18,6 +18,7 @@ from modules.reference.searcher.cnki import CNKISearcher
 from modules.reference.searcher.base import Paper
 from modules.reference.fast_ranker import fast_rank
 from modules.reference.relevance_ranker import RelevanceRanker
+from modules.reference.field_analyzer import FieldAnalyzer, build_journal_set, is_field_core_journal
 from modules.reference.formatter import format_reference_list, format_reference_list_markdown
 
 
@@ -55,6 +56,15 @@ def deduplicate_papers(papers: list[Paper]) -> list[Paper]:
 def _search_source(searcher, query, year_start, year_end, limit, label):
     try:
         papers = searcher.search(query, year_start, year_end, limit)
+        return label, papers
+    except Exception:
+        return label, []
+
+
+def _search_cnki(searcher, query, year_start, year_end, limit, field_cn_cores, label):
+    try:
+        papers = searcher.search(query, year_start, year_end, limit,
+                                 max_pages=2, field_cn_cores=field_cn_cores)
         return label, papers
     except Exception:
         return label, []
@@ -126,6 +136,15 @@ def process_paper(
     cnki = CNKISearcher()
     ranker = RelevanceRanker()
 
+    # Step 1.5: 根据论文标题分析领域，获取推荐核心期刊
+    field_analyzer = FieldAnalyzer()
+    log("Step 1.5: 分析论文领域与核心期刊...")
+    field_info = field_analyzer.analyze(paper_title)
+    cn_cores, en_cores = build_journal_set(field_info)
+    log(f"  领域: {field_info.get('field', '未知')}")
+    log(f"  推荐中文核心: {len(cn_cores)} 个, 英文核心: {len(en_cores)} 个")
+    all_field_cores = cn_cores | en_cores
+
     references: dict[int, Paper] = {}
     used_dois: set[str] = set()
     used_titles: set[str] = set()
@@ -171,7 +190,7 @@ def process_paper(
         with ThreadPoolExecutor(max_workers=3) as pool:
             if target_lang == "cn":
                 futures = [
-                    pool.submit(_search_source, cnki, cn_query, year_start, year_end, results_per_source * 2, "CNKI"),
+                    pool.submit(_search_cnki, cnki, cn_query, year_start, year_end, results_per_source * 2, cn_cores, "CNKI"),
                 ]
             else:
                 futures = [
@@ -218,6 +237,7 @@ def process_paper(
             keywords=all_keywords,
             candidates=lang_filtered,
             top_k=5,
+            field_cores=all_field_cores,
         )
         try:
             ranked = ranker.rank(

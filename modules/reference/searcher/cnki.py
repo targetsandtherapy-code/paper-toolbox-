@@ -235,12 +235,16 @@ class CNKISearcher(BaseSearcher):
         else:
             logger.error("[CNKI] 自动登录失败: %s", msg)
 
-    def _build_query_json(self, keyword: str) -> str:
+    def _build_query_json(self, keyword: str, page_num: int = 1) -> str:
+        products = ""
+        if page_num > 1:
+            products = "CJFQ,CAPJ,CJTL,CDFD,CMFD,CPFD,IPFD,CPVD,CCND,SCSF,SCHF,SCSD,SNAD,CCJD,WBFD,CCVD,CJFN"
+        search_from = 1 if page_num <= 1 else page_num + 2
         query_dict = {
             "Platform": "",
             "Resource": "CROSSDB",
             "Classid": "WD0FTY92",
-            "Products": "",
+            "Products": products,
             "QNode": {"QGroup": [{
                 "Key": "Subject", "Title": "", "Logic": 0,
                 "Items": [{"Field": "SU", "Value": keyword,
@@ -252,7 +256,7 @@ class CNKISearcher(BaseSearcher):
             "Rlang": "CHINESE",
             "KuaKuCode": KUAKU_CODES,
             "Expands": {},
-            "SearchFrom": 1,
+            "SearchFrom": search_from,
         }
         return urllib.parse.quote(json.dumps(query_dict, ensure_ascii=False))
 
@@ -262,19 +266,32 @@ class CNKISearcher(BaseSearcher):
             if remaining > 0:
                 time.sleep(remaining)
 
-    def _fetch_html(self, keyword: str, page_size: int) -> str:
+    def _fetch_page(self, keyword: str, page_num: int, page_size: int) -> str:
         self._session.headers["User-Agent"] = random.choice(USER_AGENTS)
-        qj = self._build_query_json(keyword)
+        qj = self._build_query_json(keyword, page_num)
         aside = urllib.parse.quote(f"主题：{keyword}")
         search_from = urllib.parse.quote("资源范围：总库")
-        data = (
-            f"boolSearch=true&QueryJson={qj}"
-            f"&pageNum=1&pageSize={page_size}"
-            f"&sortField=cite&sortType=desc&dstyle=listmode"
-            f"&productStr=&aside={aside}"
-            f"&searchFrom={search_from}"
-            f"&subject=&language=&uniplatform=&CurPage=1"
-        )
+
+        if page_num <= 1:
+            data = (
+                f"boolSearch=true&QueryJson={qj}"
+                f"&pageNum={page_num}&pageSize={page_size}"
+                f"&sortField=cite&sortType=desc&dstyle=listmode"
+                f"&productStr=&aside={aside}"
+                f"&searchFrom={search_from}"
+                f"&subject=&language=&uniplatform=&CurPage={page_num}"
+            )
+        else:
+            data = (
+                f"boolSearch=false&QueryJson={qj}"
+                f"&pageNum={page_num}&pageSize={page_size}"
+                f"&sortField=cite&sortType=desc&dstyle=listmode"
+                f"&boolSortSearch=false"
+                f"&productStr=&aside="
+                f"&searchFrom={search_from}"
+                f"&subject=&language=&uniplatform="
+            )
+
         self._wait()
         for attempt in range(3):
             try:
@@ -286,9 +303,9 @@ class CNKISearcher(BaseSearcher):
                 self._last_request_time = time.monotonic()
                 if resp.status_code == 200:
                     return resp.text
-                logger.warning("[CNKI] 状态码 %d (尝试 %d/3)", resp.status_code, attempt + 1)
+                logger.warning("[CNKI] 第%d页 状态码 %d (尝试 %d/3)", page_num, resp.status_code, attempt + 1)
             except Exception as e:
-                logger.warning("[CNKI] 请求异常 (尝试 %d/3): %s", attempt + 1, e)
+                logger.warning("[CNKI] 第%d页 请求异常 (尝试 %d/3): %s", page_num, attempt + 1, e)
             if attempt < 2:
                 time.sleep(2 ** attempt)
         return ""
@@ -406,30 +423,58 @@ class CNKISearcher(BaseSearcher):
             parts = [text]
         return [_clean_text(p) for p in parts if _clean_text(p)]
 
-    def search(self, query: str, year_start: int = 2021, year_end: int = 2026, limit: int = 10) -> List[Paper]:
-        logger.info("[CNKI] 搜索: '%s', %d-%d, limit=%d", query, year_start, year_end, limit)
+    def search(self, query: str, year_start: int = 2021, year_end: int = 2026,
+               limit: int = 10, max_pages: int = 3,
+               field_cn_cores: Optional[set] = None) -> List[Paper]:
+        logger.info("[CNKI] 搜索: '%s', %d-%d, limit=%d, max_pages=%d",
+                    query, year_start, year_end, limit, max_pages)
         self._ensure_cookie()
-        fetch_size = min(max(limit * 4, 30), 50)
-        html_content = self._fetch_html(query, page_size=fetch_size)
-        if not html_content:
-            self._cookie_valid = False
-            self._ensure_cookie()
-            html_content = self._fetch_html(query, page_size=fetch_size)
-        if not html_content:
-            logger.warning("[CNKI] 未获取到 HTML")
-            return []
 
-        papers = self._parse_html(html_content)
+        page_size = 50
+        all_papers: List[Paper] = []
+        seen_titles: set[str] = set()
+
+        for page in range(1, max_pages + 1):
+            html_content = self._fetch_page(query, page, page_size)
+            if not html_content and page == 1:
+                self._cookie_valid = False
+                self._ensure_cookie()
+                html_content = self._fetch_page(query, page, page_size)
+            if not html_content:
+                break
+
+            page_papers = self._parse_html(html_content)
+            if not page_papers:
+                break
+
+            for p in page_papers:
+                tk = (p.title or "").strip()[:40]
+                if tk and tk not in seen_titles:
+                    seen_titles.add(tk)
+                    all_papers.append(p)
+
+            logger.info("[CNKI] 第%d页解析 %d 篇，累计 %d 篇", page, len(page_papers), len(all_papers))
+            if len(page_papers) < page_size:
+                break
+
         if year_start or year_end:
-            papers = [
-                p for p in papers
+            all_papers = [
+                p for p in all_papers
                 if p.year and year_start <= p.year <= year_end
             ]
 
-        core = [p for p in papers if is_core_journal(p.journal or "")]
-        non_core = [p for p in papers if not is_core_journal(p.journal or "")]
-        sorted_papers = core + non_core
+        def _journal_score(p: Paper) -> int:
+            j = p.journal or ""
+            if field_cn_cores and any(c in j or j in c for c in field_cn_cores):
+                return 2
+            if is_core_journal(j):
+                return 1
+            return 0
 
-        core_count = len(core)
-        logger.info("[CNKI] 解析到 %d 篇（核心 %d / 非核心 %d）", len(papers), core_count, len(non_core))
-        return sorted_papers[:limit]
+        all_papers.sort(key=lambda p: _journal_score(p), reverse=True)
+
+        field_count = sum(1 for p in all_papers if _journal_score(p) == 2)
+        core_count = sum(1 for p in all_papers if _journal_score(p) >= 1)
+        logger.info("[CNKI] 共 %d 篇（领域核心 %d / 一般核心 %d / 普通 %d）",
+                    len(all_papers), field_count, core_count - field_count, len(all_papers) - core_count)
+        return all_papers[:limit]

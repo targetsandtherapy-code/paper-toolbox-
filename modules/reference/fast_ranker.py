@@ -18,10 +18,11 @@ def _tokenize(text: str) -> set[str]:
     return tokens
 
 
-def fast_rank(context: str, keywords: list[str], candidates: list[Paper], top_k: int = 3) -> list[Paper]:
-    """基于关键词重叠度 + 被引量的快速排序
+def fast_rank(context: str, keywords: list[str], candidates: list[Paper], top_k: int = 3,
+              field_cores: set[str] | None = None) -> list[Paper]:
+    """基于关键词重叠度 + 被引量 + 核心期刊的快速排序
 
-    评分 = 关键词匹配得分(0-70) + 被引量得分(0-20) + 摘要匹配得分(0-10)
+    评分 = 关键词匹配得分(0-70) + 被引量得分(0-20) + 摘要匹配得分(0-10) + 期刊加分
     """
     if not candidates:
         return []
@@ -59,9 +60,12 @@ def fast_rank(context: str, keywords: list[str], candidates: list[Paper], top_k:
         if p.year and p.year >= 2022:
             score += min(10, (p.year - 2020) * 2)
 
-        # 核心期刊加分 (0-15分)
-        if is_core_journal(p.journal or ""):
-            score += 15
+        # 领域核心期刊加分 (0-20分)
+        j = p.journal or ""
+        if field_cores and any(c.lower() in j.lower() or j.lower() in c.lower() for c in field_cores if c):
+            score += 20
+        elif is_core_journal(j):
+            score += 12
 
         scored.append((score, p))
 
