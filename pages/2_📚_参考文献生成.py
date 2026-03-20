@@ -48,14 +48,8 @@ with col_left:
     results_per = st.slider("每源检索数", min_value=1, max_value=10, value=5,
         help="增加可提高匹配质量，但会变慢")
 
-    fast_mode = st.checkbox("快速模式", value=False,
-        help="开启后 CNKI 少翻页、fit 校验批量更小，整体更快；追求极致相关与覆盖面时请关闭")
-
-    sequential_en = st.checkbox(
-        "英文顺序检索（命中即停）",
-        value=False,
-        help="按 OpenAlex → CrossRef → PubMed 依次查询；单源内试匹配，通过则不再请求后续英文库，通常明显省时间。各源均未通过时仍会合并候选并做一次完整重排。也可设置环境变量 REFERENCE_SEQUENTIAL_EN_SEARCH=1。",
-    )
+    fast_mode = st.checkbox("快速模式", value=True,
+        help="开启后 CNKI 少翻页，整体更快")
 
     max_markers_in = st.number_input(
         "最多处理角标数（0=全部）",
@@ -63,35 +57,6 @@ with col_left:
         max_value=500,
         value=0,
         help="按角标编号升序只处理前 N 个，用于试跑；0 表示不限制。",
-    )
-
-    lang_fallback = st.checkbox(
-        "跨语言降级",
-        value=True,
-        help="分配为中文检索但无匹配时自动改试英文库，反之亦然。关闭则与环境变量 REFERENCE_LANG_FALLBACK=0 一致。",
-    )
-
-    policy_cn_only = st.checkbox(
-        "政策类优先/固定中文检索（可选）",
-        value=False,
-        help="默认关闭，政策句与其它角标同样参与中英分配与降级。开启则 policy_macro 固定先走知网。REFERENCE_POLICY_CN_ONLY。",
-    )
-    policy_en_fb = st.checkbox(
-        "政策类允许中文无果后试英文",
-        value=False,
-        help="关闭时政策类只在中文渠道内匹配（更贴合二十大/健康中国等表述）。对应 REFERENCE_POLICY_ALLOW_EN_FALLBACK。",
-    )
-
-    skip_pool_fb = st.checkbox(
-        "跳过候选池兜底（第4轮）",
-        value=False,
-        help="不在同一语种内对已累计候选做合并重排。可与跨语言降级搭配：先换库再搜，少做「弱相关强选」。环境变量 REFERENCE_SKIP_POOL_FALLBACK=1。",
-    )
-
-    nursing_hard = st.checkbox(
-        "护理/医务课题：启用护士人群硬过滤与检索限定（可选）",
-        value=False,
-        help="默认关闭，工具按角标前文通用匹配中英文文献。仅当论文明确为护理/医务且需强约束人群时勾选。环境变量 REFERENCE_NURSING_HARD_SCOPE=1。",
     )
 
     btn_col1, btn_col2 = st.columns(2)
@@ -174,13 +139,7 @@ with col_right:
                     callback=log_cb, progress_callback=prog_cb,
                     paper_title=paper_title_input.strip(),
                     fast_mode=fast_mode,
-                    sequential_en_search=sequential_en,
                     max_markers=int(max_markers_in) if max_markers_in else None,
-                    lang_fallback=lang_fallback,
-                    skip_pool_fallback=skip_pool_fb,
-                    policy_cn_only=policy_cn_only,
-                    policy_allow_en_fallback=policy_en_fb,
-                    nursing_hard_scope=nursing_hard,
                 )
             except InterruptedError:
                 error = "stopped"
