@@ -83,7 +83,7 @@ class ContentAnalyzer:
     def broaden_query(self, original: AnalysisResult, paper_title: str = "") -> AnalysisResult:
         """当原始搜索无结果时，用 LLM 生成更宽泛的搜索词。"""
         title_hint = f"\n论文标题：{paper_title}" if paper_title else ""
-        prompt = f"""原始搜索未找到相关文献，请生成更宽泛的替代搜索词。
+        prompt = f"""原始搜索未找到相关文献，请生成更宽泛但仍紧扣论文主题的替代搜索词。
 {title_hint}
 原始论点：{original.key_claim}
 原始中文搜索词：{original.search_query_cn}
@@ -95,6 +95,7 @@ class ContentAnalyzer:
 2. 保留核心概念，用上位概念或同义词替代
 3. 搜索词控制在2-3个核心词，不要太长
 4. 生成3组备选搜索词（从具体到宽泛）
+5. **重要**：所有搜索词必须紧扣论文标题的研究领域，不能偏离论文主题。如论文是关于"正念训练对护理人员隐性缺勤影响"，搜索词必须与护理/正念/隐性缺勤/职业健康等相关领域有关
 
 返回 JSON：
 {{
