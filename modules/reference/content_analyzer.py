@@ -22,7 +22,8 @@ class ContentAnalyzer:
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
 
-    def analyze(self, marker_id: str, paragraph: str, context_before: str = "", paper_title: str = "") -> AnalysisResult:
+    def analyze(self, marker_id: str, paragraph: str, context_before: str = "",
+                paper_title: str = "", max_retries: int = 3) -> AnalysisResult:
         title_hint = f"\n本论文标题：{paper_title}" if paper_title else ""
         prompt = f"""你是一位学术论文引用分析专家。请分析以下论文段落中角标[{marker_id}]处引用想要支撑的核心论点。
 {title_hint}
@@ -47,62 +48,72 @@ class ContentAnalyzer:
   "search_query_en": "Specific English academic search query for this exact claim within the paper's domain"
 }}"""
 
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "你是学术论文引用分析专家，擅长从论文段落中提取核心论点并生成精准的学术搜索关键词。只返回 JSON，不要返回其他内容。"},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.3,
-                response_format={"type": "json_object"},
-                extra_body={"enable_thinking": False},
-            )
+        import time as _time
+        last_err = None
+        for attempt in range(max_retries):
+            try:
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": "你是学术论文引用分析专家，擅长从论文段落中提取核心论点并生成精准的学术搜索关键词。只返回 JSON，不要返回其他内容。"},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.3,
+                    response_format={"type": "json_object"},
+                    extra_body={"enable_thinking": False},
+                )
 
-            content = response.choices[0].message.content.strip()
-            data = json.loads(content)
+                content = response.choices[0].message.content.strip()
+                data = json.loads(content)
 
-            return AnalysisResult(
-                marker_id=marker_id,
-                core_topic=data.get("core_topic", ""),
-                research_method=data.get("research_method", ""),
-                key_claim=data.get("key_claim", ""),
-                cn_keywords=data.get("cn_keywords", []),
-                en_keywords=data.get("en_keywords", []),
-                search_query_cn=data.get("search_query_cn", ""),
-                search_query_en=data.get("search_query_en", ""),
-            )
-        except json.JSONDecodeError as e:
-            print(f"[ContentAnalyzer] JSON 解析失败: {e}")
-            print(f"  原始返回: {content[:200]}")
-            raise
-        except Exception as e:
-            print(f"[ContentAnalyzer] 分析失败: {e}")
-            raise
+                return AnalysisResult(
+                    marker_id=marker_id,
+                    core_topic=data.get("core_topic", ""),
+                    research_method=data.get("research_method", ""),
+                    key_claim=data.get("key_claim", ""),
+                    cn_keywords=data.get("cn_keywords", []),
+                    en_keywords=data.get("en_keywords", []),
+                    search_query_cn=data.get("search_query_cn", ""),
+                    search_query_en=data.get("search_query_en", ""),
+                )
+            except json.JSONDecodeError as e:
+                print(f"[ContentAnalyzer] JSON 解析失败: {e}")
+                raise
+            except Exception as e:
+                last_err = e
+                if attempt < max_retries - 1:
+                    wait = 2 ** attempt
+                    print(f"[ContentAnalyzer] 第{attempt+1}次失败，{wait}s后重试: {e}")
+                    _time.sleep(wait)
+        print(f"[ContentAnalyzer] {max_retries}次均失败: {last_err}")
+        raise last_err
 
     def broaden_query(self, original: AnalysisResult, paper_title: str = "") -> AnalysisResult:
         """当原始搜索无结果时，用 LLM 生成更宽泛的搜索词。"""
         title_hint = f"\n论文标题：{paper_title}" if paper_title else ""
-        prompt = f"""原始搜索未找到相关文献，请生成更宽泛但仍紧扣论文主题的替代搜索词。
+        prompt = f"""在知网(CNKI)搜索以下论点未找到文献，请生成能在知网搜到结果的替代搜索词。
 {title_hint}
 原始论点：{original.key_claim}
-原始中文搜索词：{original.search_query_cn}
-原始英文搜索词：{original.search_query_en}
-原始中文关键词：{', '.join(original.cn_keywords)}
+原始搜索词（搜不到）：{original.search_query_cn}
 
-要求：
-1. 去掉过于具体的人名、量表名、限定词
-2. 保留核心概念，用上位概念或同义词替代
-3. 搜索词控制在2-3个核心词，不要太长
-4. 生成3组备选搜索词（从具体到宽泛）
-5. **重要**：所有搜索词必须紧扣论文标题的研究领域，不能偏离论文主题。如论文是关于"正念训练对护理人员隐性缺勤影响"，搜索词必须与护理/正念/隐性缺勤/职业健康等相关领域有关
+知网搜索技巧：
+- 搜索词要用**日常学术用语**，不要用太专业的术语（如"行为觉察性"改为"行为改变"）
+- 去掉所有人名（如"Cooper""骆宏""Maslach"等）
+- 去掉具体量表名（如"SPS-6""MBI-GS"等），用通俗描述替代
+- 每组搜索词只用2-3个常见中文词，用空格分隔
+- 必须包含论文的核心主题词（如"护士"或"护理人员"或"正念"或"隐性缺勤"等）
 
-返回 JSON：
+示例：
+- 原始："隐性缺勤 Cooper 正念训练" → 改为："隐性缺勤 护士 影响因素"
+- 原始："心理资本量表 骆宏版 中国护理情境" → 改为："护士 心理资本量表 信效度"
+- 原始："组织支持感 社会交换理论 员工忠诚度" → 改为："组织支持感 护士 工作投入"
+
+返回 JSON（3组搜索词，从具体到宽泛）：
 {{
-  "cn_queries": ["备选中文搜索词1", "备选中文搜索词2", "备选中文搜索词3"],
-  "en_queries": ["alternative English query 1", "alternative English query 2", "alternative English query 3"],
-  "cn_keywords": ["宽泛中文关键词1", "宽泛中文关键词2", "宽泛中文关键词3"],
-  "en_keywords": ["broad English keyword 1", "broad English keyword 2", "broad English keyword 3"]
+  "cn_queries": ["搜索词1", "搜索词2", "搜索词3"],
+  "en_queries": ["English query 1", "English query 2", "English query 3"],
+  "cn_keywords": ["关键词1", "关键词2", "关键词3"],
+  "en_keywords": ["keyword1", "keyword2", "keyword3"]
 }}"""
         try:
             resp = self.client.chat.completions.create(

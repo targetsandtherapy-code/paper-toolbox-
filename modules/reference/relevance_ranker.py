@@ -11,7 +11,8 @@ class RelevanceRanker:
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.model = model
 
-    def rank(self, context: str, claim: str, candidates: list[Paper], top_k: int = 3, paper_title: str = "") -> list[Paper]:
+    def rank(self, context: str, claim: str, candidates: list[Paper], top_k: int = 3,
+             paper_title: str = "", min_score: int = 4) -> list[Paper]:
         if not candidates:
             return []
 
@@ -89,7 +90,7 @@ class RelevanceRanker:
                 scored.append((score_map.get(i, 0), p))
 
             scored.sort(key=lambda x: x[0], reverse=True)
-            return [p for s, p in scored[:top_k] if s >= 4]
+            return [p for s, p in scored[:top_k] if s >= min_score]
 
         except Exception as e:
             print(f"[RelevanceRanker] 排序失败，返回原始顺序: {e}")

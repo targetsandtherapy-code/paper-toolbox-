@@ -185,11 +185,10 @@ def process_paper(
                 log(f"  分析失败: {e}")
                 continue
 
-        def _try_search_and_rank(cur_analysis, attempt_label=""):
-            """搜索 + 排序 + 选最佳，返回 Paper 或 None"""
-            cn_q = " ".join(cur_analysis.cn_keywords[:3])
-            en_q = " ".join(cur_analysis.en_keywords[:3])
+        all_candidates_pool: list[Paper] = []
 
+        def _search_candidates(cn_q, en_q):
+            """执行搜索并返回候选列表"""
             candidates = []
             with ThreadPoolExecutor(max_workers=3) as pool:
                 if target_lang == "cn":
@@ -207,10 +206,10 @@ def process_paper(
                     if papers:
                         log(f"  {label}: {len(papers)}篇")
                         candidates.extend(papers)
+            return candidates
 
-            if not candidates:
-                return None
-
+        def _filter_and_rank(candidates, cur_analysis, min_score=4):
+            """去重 + 语言过滤 + 排序，返回最佳 Paper 或 None"""
             candidates = deduplicate_papers(candidates)
             candidates = [
                 p for p in candidates
@@ -245,6 +244,7 @@ def process_paper(
                     candidates=pre_ranked,
                     top_k=max(top_k, 3),
                     paper_title=paper_title,
+                    min_score=min_score,
                 )
             except Exception:
                 ranked = pre_ranked[:max(top_k, 3)]
@@ -259,14 +259,68 @@ def process_paper(
                 return p
             return None
 
-        # 第一轮：原始关键词搜索
-        best = _try_search_and_rank(analysis)
+        # === 第一轮：原始关键词 ===
+        cn_q1 = " ".join(analysis.cn_keywords[:3])
+        en_q1 = " ".join(analysis.en_keywords[:3])
+        cands1 = _search_candidates(cn_q1, en_q1)
+        all_candidates_pool.extend(cands1)
+        best = _filter_and_rank(cands1, analysis) if cands1 else None
 
-        # 第二轮：如果失败，用 LLM 生成更宽泛的关键词重试
+        # === 第二轮：LLM 宽泛关键词（尝试 broaden_query 返回的搜索词） ===
         if not best:
-            log(f"  [重试] 用宽泛关键词...")
-            broad = analyzer.broaden_query(analysis, paper_title=paper_title)
-            best = _try_search_and_rank(broad, "宽泛")
+            log(f"  [重试] 宽泛关键词...")
+            try:
+                broad = analyzer.broaden_query(analysis, paper_title=paper_title)
+                broad_q_cn = broad.search_query_cn or " ".join(broad.cn_keywords[:3])
+                broad_q_en = broad.search_query_en or " ".join(broad.en_keywords[:3])
+                cands2 = _search_candidates(broad_q_cn, broad_q_en)
+                all_candidates_pool.extend(cands2)
+                best = _filter_and_rank(cands2, broad) if cands2 else None
+            except Exception:
+                pass
+
+        # === 第三轮：用论文标题核心词 + 该角标的核心概念做搜索 ===
+        if not best:
+            log(f"  [重试] 领域级搜索...")
+            core_word = analysis.cn_keywords[0] if analysis.cn_keywords else ""
+            if target_lang == "cn":
+                fallback_q = core_word + " 护士" if core_word else paper_title
+            else:
+                core_en = analysis.en_keywords[0] if analysis.en_keywords else "nursing"
+                fallback_q = core_en + " nurse"
+            cands3 = _search_candidates(fallback_q, fallback_q)
+            all_candidates_pool.extend(cands3)
+            best = _filter_and_rank(cands3, analysis, min_score=2) if cands3 else None
+
+        # === 第四轮兜底：从所有候选池中选分最高的（不经 LLM 排序） ===
+        if not best and all_candidates_pool:
+            log(f"  [兜底] 从候选池选最佳...")
+            pool_deduped = deduplicate_papers(all_candidates_pool)
+            pool_deduped = [
+                p for p in pool_deduped
+                if not (p.doi and p.doi.lower() in used_dois)
+                and p.title.lower().strip()[:50] not in used_titles
+            ]
+            if target_lang == "cn":
+                pool_lang = [p for p in pool_deduped if _is_chinese_title(p.title)]
+                if not pool_lang:
+                    pool_lang = pool_deduped
+            else:
+                pool_lang = [p for p in pool_deduped if not _is_chinese_title(p.title)]
+                if not pool_lang:
+                    pool_lang = pool_deduped
+
+            if pool_lang:
+                all_kw = analysis.cn_keywords + analysis.en_keywords
+                fallback_ranked = fast_rank(
+                    context=marker.context_before,
+                    keywords=all_kw,
+                    candidates=pool_lang,
+                    top_k=1,
+                    field_cores=all_field_cores,
+                )
+                if fallback_ranked:
+                    best = fallback_ranked[0]
 
         if best:
             references[cid] = best
@@ -279,6 +333,77 @@ def process_paper(
             log(f"    DOI: {best.doi} | {best.journal} | {best.year}")
         else:
             log(f"  [MISS] 无匹配")
+
+    # === 最终补救：对仍未匹配的角标，逐个用论点关键词精准搜索 ===
+    missing_ids = [cid for cid in grouped if cid not in references]
+    if missing_ids:
+        log(f"\n--- 最终补救: {len(missing_ids)} 个角标未匹配 ---")
+        from modules.reference.core_journals import is_core_journal
+
+        for cid in missing_ids:
+            marker = grouped[cid]
+            target_lang_m = lang_map[cid]
+
+            cache_key = marker.context_before.strip()[:100]
+            miss_analysis = analysis_cache.get(cache_key)
+
+            # 用该角标自身的论点搜索，而不是泛领域词
+            if miss_analysis:
+                if target_lang_m == "cn":
+                    rescue_q = miss_analysis.search_query_cn or " ".join(miss_analysis.cn_keywords[:2])
+                    rescue_q2 = paper_title
+                else:
+                    rescue_q = miss_analysis.search_query_en or " ".join(miss_analysis.en_keywords[:2])
+                    rescue_q2 = " ".join(miss_analysis.en_keywords[:2]) + " nursing"
+            else:
+                rescue_q = paper_title if target_lang_m == "cn" else "mindfulness nursing presenteeism"
+                rescue_q2 = rescue_q
+
+            rescue_cands: list[Paper] = []
+            for rq in [rescue_q, rescue_q2]:
+                if not rq:
+                    continue
+                try:
+                    if target_lang_m == "cn":
+                        _, rp = _search_cnki(cnki, rq, year_start, year_end, 20, cn_cores, f"补救-{cid}")
+                    else:
+                        _, rp1 = _search_source(crossref, rq, year_start, year_end, 10, f"补救CR-{cid}")
+                        _, rp2 = _search_source(openalex, rq, year_start, year_end, 10, f"补救OA-{cid}")
+                        rp = (rp1 or []) + (rp2 or [])
+                    if rp:
+                        rescue_cands.extend(rp)
+                except Exception:
+                    pass
+
+            rescue_cands = deduplicate_papers(rescue_cands)
+            available = [
+                p for p in rescue_cands
+                if not (p.doi and p.doi.lower() in used_dois)
+                and p.title.lower().strip()[:50] not in used_titles
+            ]
+            if target_lang_m == "cn":
+                lang_avail = [p for p in available if _is_chinese_title(p.title)]
+                if lang_avail:
+                    available = lang_avail
+            else:
+                lang_avail = [p for p in available if not _is_chinese_title(p.title)]
+                if lang_avail:
+                    available = lang_avail
+
+            if available:
+                available.sort(key=lambda p: (
+                    2 if is_core_journal(p.journal or "") else 0,
+                    p.citation_count or 0,
+                ), reverse=True)
+                best_p = available[0]
+                references[cid] = best_p
+                if best_p.doi:
+                    used_dois.add(best_p.doi.lower())
+                used_titles.add(best_p.title.lower().strip()[:50])
+                is_cn = _is_chinese_title(best_p.title)
+                log(f"  [补救OK] [{cid}] {'[中]' if is_cn else '[英]'} {best_p.title[:50]} | {best_p.journal}")
+            else:
+                log(f"  [补救失败] [{cid}]")
 
     # 统计中英文比例
     cn_final = sum(1 for p in references.values() if _is_chinese_title(p.title))
