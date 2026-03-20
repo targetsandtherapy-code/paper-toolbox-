@@ -40,7 +40,10 @@ def deduplicate_papers(papers: list[Paper]) -> list[Paper]:
             if doi_lower in seen_dois:
                 existing = seen_dois[doi_lower]
                 if (p.citation_count or 0) > (existing.citation_count or 0):
-                    result.remove(existing)
+                    try:
+                        result.remove(existing)
+                    except ValueError:
+                        pass
                     result.append(p)
                     seen_dois[doi_lower] = p
                 continue
