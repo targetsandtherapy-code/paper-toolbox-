@@ -77,13 +77,19 @@ class DocParser:
             raise ValueError(f"仅支持 .docx 格式，当前: {self.file_path.suffix}")
         self.doc = Document(str(self.file_path))
 
+    _REF_SECTION_HEADERS = re.compile(
+        r"^(参\s*考\s*文\s*献|references?|bibliography)\s*$", re.I
+    )
+
     def extract_markers(self) -> list[CitationMarker]:
-        """提取文档中所有引用角标"""
+        """提取文档正文中的引用角标（遇到「参考文献」标题后停止）"""
         markers = []
         for para_idx, para in enumerate(self.doc.paragraphs):
             text = para.text.strip()
             if not text:
                 continue
+            if self._REF_SECTION_HEADERS.match(text):
+                break
 
             for match in MARKER_PATTERN.finditer(text):
                 raw_marker = match.group(0)

@@ -51,6 +51,13 @@ with col_left:
     fast_mode = st.checkbox("快速模式", value=True,
         help="开启后 CNKI 少翻页，整体更快")
 
+    citation_format = st.selectbox(
+        "引用格式",
+        ["GB/T 7714", "APA 7th", "MLA 9th"],
+        index=0,
+        help="选择参考文献输出格式",
+    )
+
     max_markers_in = st.number_input(
         "最多处理角标数（0=全部）",
         min_value=0,
@@ -163,8 +170,15 @@ with col_right:
                 en_count = len(refs) - cn_count
                 status_text.success(f"{len(refs)} 条参考文献已生成 (中文 {cn_count} + 英文 {en_count})")
 
+                if citation_format == "APA 7th":
+                    from modules.reference.formatter import format_reference_list_apa
+                    plain_output = format_reference_list_apa(refs)
+                elif citation_format == "MLA 9th":
+                    from modules.reference.formatter import format_reference_list_mla
+                    plain_output = format_reference_list_mla(refs)
+
                 st.markdown("### 参考文献列表")
-                st.markdown(md_output)
+                st.markdown(md_output if citation_format == "GB/T 7714" else f"```\n{plain_output}\n```")
 
                 st.markdown("### 详细匹配")
                 for idx in sorted(refs.keys()):

@@ -6,6 +6,7 @@ from typing import Optional
 
 from modules.reference.searcher.base import Paper
 from modules.reference.searcher.web_search import search_policy_web, search_web_general
+from modules.reference.searcher.google_books import search_books
 
 
 def _extract_guillemet(ctx: str) -> Optional[str]:
@@ -58,7 +59,9 @@ def try_web_search_for_quoted_title(
     if ref_type in ("R", "EB"):
         results = search_policy_web(inner, max_results=5)
     elif ref_type == "M":
-        results = search_web_general(inner, max_results=3)
+        results = search_books(inner, max_results=5)
+        if not results:
+            results = search_web_general(inner, max_results=3)
     else:
         return None
 

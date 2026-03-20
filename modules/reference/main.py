@@ -760,6 +760,7 @@ def process_paper(
 
         tried_queries: list[str] = []
         last_cands: list[Paper] = []
+        match_round = 0
         for round_i in range(max_search_rounds):
             if best is not None:
                 break
@@ -773,6 +774,7 @@ def process_paper(
                 last_cands = cands
                 best = _pick_best(cands)
                 if best:
+                    match_round = round_i + 1
                     break
 
             rejected_titles = [p.title[:60] for p in (cands or last_cands)[:6]]
@@ -813,7 +815,7 @@ def process_paper(
                     f"  [降级命中] 使用{'英文' if target_lang == 'en' else '中文'}文献"
                     f"（原分配为{'中文' if assigned_lang == 'cn' else '英文'}角标位）"
                 )
-            log(f"  [OK] [{elapsed:.1f}s] {'[中]' if is_cn else '[英]'} {best.title[:55]}")
+            log(f"  [OK] [{elapsed:.1f}s] [轮{match_round}] {'[中]' if is_cn else '[英]'} {best.title[:55]}")
             rt = getattr(best, "reference_type", "J")
             if rt == "EB/OL":
                 log(f"    [EB/OL] {best.journal or ''} | {best.url or ''}")

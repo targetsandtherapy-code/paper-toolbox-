@@ -162,3 +162,76 @@ def format_single_reference_markdown(index: int, paper: Paper) -> str:
         entry += f"DOI: [{paper.doi}]({doi_url})"
 
     return entry
+
+
+# ===== APA 7th Edition =====
+
+def _format_authors_apa(authors: list[str], max_show: int = 20) -> str:
+    if not authors:
+        return ""
+    if len(authors) == 1:
+        return authors[0]
+    if len(authors) == 2:
+        return f"{authors[0]}, & {authors[1]}"
+    if len(authors) <= max_show:
+        return ", ".join(authors[:-1]) + f", & {authors[-1]}"
+    return ", ".join(authors[:19]) + f", ... {authors[-1]}"
+
+
+def format_paper_apa(paper: Paper) -> str:
+    authors = _format_authors_apa(paper.authors)
+    title = paper.title.rstrip(".")
+    year = paper.year or "n.d."
+    parts = []
+    if authors:
+        parts.append(f"{authors} ({year}).")
+    else:
+        parts.append(f"({year}).")
+    parts.append(f" {title}.")
+    if paper.journal:
+        parts.append(f" *{paper.journal}*.")
+    if paper.doi:
+        parts.append(f" https://doi.org/{paper.doi}")
+    return "".join(parts)
+
+
+def format_reference_list_apa(papers: dict[int, Paper]) -> str:
+    lines = ["References", ""]
+    for idx in sorted(papers.keys()):
+        lines.append(format_paper_apa(papers[idx]))
+    return "\n".join(lines)
+
+
+# ===== MLA 9th Edition =====
+
+def _format_authors_mla(authors: list[str]) -> str:
+    if not authors:
+        return ""
+    if len(authors) == 1:
+        return authors[0]
+    if len(authors) == 2:
+        return f"{authors[0]}, and {authors[1]}"
+    return f"{authors[0]}, et al."
+
+
+def format_paper_mla(paper: Paper) -> str:
+    authors = _format_authors_mla(paper.authors)
+    title = f'"{paper.title.rstrip(".")}."'
+    parts = []
+    if authors:
+        parts.append(f"{authors}.")
+    parts.append(f" {title}")
+    if paper.journal:
+        parts.append(f" *{paper.journal}*,")
+    if paper.year:
+        parts.append(f" {paper.year}.")
+    if paper.doi:
+        parts.append(f" doi:{paper.doi}.")
+    return "".join(parts)
+
+
+def format_reference_list_mla(papers: dict[int, Paper]) -> str:
+    lines = ["Works Cited", ""]
+    for idx in sorted(papers.keys()):
+        lines.append(format_paper_mla(papers[idx]))
+    return "\n".join(lines)
