@@ -486,7 +486,12 @@ def process_paper(
 
     def log(msg):
         if callback:
-            callback(msg)
+            try:
+                callback(msg)
+            except InterruptedError:
+                raise
+            except Exception:
+                pass
         else:
             try:
                 print(msg)
