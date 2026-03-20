@@ -3,6 +3,7 @@ import json
 from openai import OpenAI
 from modules.reference.searcher.base import Paper
 from modules.reference.config import QWEN_API_KEY, QWEN_BASE_URL, QWEN_MODEL
+from modules.reference.core_journals import is_core_journal
 
 
 class RelevanceRanker:
@@ -20,7 +21,12 @@ class RelevanceRanker:
         candidates_text = ""
         for i, p in enumerate(candidates):
             abstract_preview = (p.abstract or "无摘要")[:150]
-            candidates_text += f"\n{i+1}. 标题: {p.title}\n   摘要: {abstract_preview}\n   期刊: {p.journal or 'N/A'} | 年份: {p.year} | 被引: {p.citation_count or 0}\n"
+            core_tag = "★核心期刊" if is_core_journal(p.journal or "") else "普通期刊"
+            candidates_text += (
+                f"\n{i+1}. 标题: {p.title}"
+                f"\n   摘要: {abstract_preview}"
+                f"\n   期刊: {p.journal or 'N/A'} [{core_tag}] | 年份: {p.year} | 被引: {p.citation_count or 0}\n"
+            )
 
         title_hint = f"\n本论文标题：{paper_title}" if paper_title else ""
         prompt = f"""你是学术论文引用匹配专家。请严格评估以下候选文献与论文段落中特定论点的相关性。
@@ -40,7 +46,12 @@ class RelevanceRanker:
 - 3-4分: 仅领域相关，但未涉及该论点的核心概念
 - 1-2分: 与该具体论点无实质关联（即使同属大领域也应低分）
 
-注意：只看是否与上述"具体论点"相关，不要因为论文看起来学术质量高就给高分。一篇顶刊论文如果研究内容与该论点无关，也应给 1-2 分。
+期刊质量加分规则（在上述相关性评分基础上额外加分）：
+- 标注为 ★核心期刊 的文献：在相关性评分基础上 +2 分
+- 标注为 普通期刊 的文献：不加分
+- 最终分数上限仍为 10 分
+
+注意：相关性仍是第一优先级。一篇普通期刊的高相关论文，优于一篇核心期刊的低相关论文。但在相关性接近时，优先选择核心期刊。
 
 请严格按以下 JSON 格式返回（不要添加其他文字）：
 {{

@@ -21,6 +21,7 @@ import urllib3
 from bs4 import BeautifulSoup, Tag
 
 from .base import BaseSearcher, Paper
+from modules.reference.core_journals import is_core_journal
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 logger = logging.getLogger(__name__)
@@ -269,7 +270,7 @@ class CNKISearcher(BaseSearcher):
         data = (
             f"boolSearch=true&QueryJson={qj}"
             f"&pageNum=1&pageSize={page_size}"
-            f"&sortField=&sortType=&dstyle=listmode"
+            f"&sortField=cite&sortType=desc&dstyle=listmode"
             f"&productStr=&aside={aside}"
             f"&searchFrom={search_from}"
             f"&subject=&language=&uniplatform=&CurPage=1"
@@ -408,11 +409,12 @@ class CNKISearcher(BaseSearcher):
     def search(self, query: str, year_start: int = 2021, year_end: int = 2026, limit: int = 10) -> List[Paper]:
         logger.info("[CNKI] 搜索: '%s', %d-%d, limit=%d", query, year_start, year_end, limit)
         self._ensure_cookie()
-        html_content = self._fetch_html(query, page_size=min(limit * 2, 50))
+        fetch_size = min(max(limit * 4, 30), 50)
+        html_content = self._fetch_html(query, page_size=fetch_size)
         if not html_content:
             self._cookie_valid = False
             self._ensure_cookie()
-            html_content = self._fetch_html(query, page_size=min(limit * 2, 50))
+            html_content = self._fetch_html(query, page_size=fetch_size)
         if not html_content:
             logger.warning("[CNKI] 未获取到 HTML")
             return []
@@ -424,5 +426,10 @@ class CNKISearcher(BaseSearcher):
                 if p.year and year_start <= p.year <= year_end
             ]
 
-        logger.info("[CNKI] 解析到 %d 篇论文", len(papers))
-        return papers[:limit]
+        core = [p for p in papers if is_core_journal(p.journal or "")]
+        non_core = [p for p in papers if not is_core_journal(p.journal or "")]
+        sorted_papers = core + non_core
+
+        core_count = len(core)
+        logger.info("[CNKI] 解析到 %d 篇（核心 %d / 非核心 %d）", len(papers), core_count, len(non_core))
+        return sorted_papers[:limit]

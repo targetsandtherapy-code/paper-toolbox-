@@ -1,6 +1,7 @@
-"""快速本地相关性排序 — 无需 LLM 调用，基于关键词匹配 + 被引量"""
+"""快速本地相关性排序 — 无需 LLM 调用，基于关键词匹配 + 被引量 + 核心期刊"""
 import re
 from modules.reference.searcher.base import Paper
+from modules.reference.core_journals import is_core_journal
 
 
 def _tokenize(text: str) -> set[str]:
@@ -57,6 +58,10 @@ def fast_rank(context: str, keywords: list[str], candidates: list[Paper], top_k:
         # 年份新近性 (0-10分)
         if p.year and p.year >= 2022:
             score += min(10, (p.year - 2020) * 2)
+
+        # 核心期刊加分 (0-15分)
+        if is_core_journal(p.journal or ""):
+            score += 15
 
         scored.append((score, p))
 
