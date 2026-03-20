@@ -37,12 +37,26 @@ _IRRELEVANT_KEYWORDS = {
     "教材", "慕课", "课堂教学", "教学质量", "教育评价",
 }
 
+_WRONG_POPULATION_KEYWORDS = {
+    "大学生", "中学生", "高中生", "小学生", "幼儿", "儿童",
+    "警察", "警务人员", "教师", "幼儿教师", "银行",
+    "会计", "听障", "运动员", "企业员工",
+}
 
-def _is_irrelevant_paper(paper: Paper) -> bool:
-    """过滤明显不相关的论文（教学类等）"""
+_NURSING_KEYWORDS = {"护士", "护理", "医护", "医务", "临床护士", "ICU护士",
+                     "手术室护士", "急诊护士", "精神科护士", "护理人员"}
+
+
+def _is_irrelevant_paper(paper: Paper, strict: bool = False) -> bool:
+    """过滤明显不相关的论文"""
     title = paper.title or ""
     for kw in _IRRELEVANT_KEYWORDS:
         if kw in title:
+            return True
+    if strict:
+        has_nursing = any(nk in title for nk in _NURSING_KEYWORDS)
+        has_wrong_pop = any(wk in title for wk in _WRONG_POPULATION_KEYWORDS)
+        if has_wrong_pop and not has_nursing:
             return True
     return False
 
@@ -318,6 +332,7 @@ def process_paper(
                 p for p in pool_deduped
                 if not (p.doi and p.doi.lower() in used_dois)
                 and p.title.lower().strip()[:50] not in used_titles
+                and not _is_irrelevant_paper(p, strict=True)
             ]
             if target_lang == "cn":
                 pool_lang = [p for p in pool_deduped if _is_chinese_title(p.title)]
@@ -334,11 +349,28 @@ def process_paper(
                     context=marker.context_before,
                     keywords=all_kw,
                     candidates=pool_lang,
-                    top_k=1,
+                    top_k=5,
                     field_cores=all_field_cores,
                 )
                 if fallback_ranked:
-                    best = fallback_ranked[0]
+                    try:
+                        llm_ranked = ranker.rank(
+                            context=marker.context_before,
+                            claim=analysis.key_claim,
+                            candidates=fallback_ranked,
+                            top_k=3,
+                            paper_title=paper_title,
+                            min_score=2,
+                        )
+                        for p in (llm_ranked or fallback_ranked):
+                            doi_key = p.doi.lower() if p.doi else None
+                            title_key = p.title.lower().strip()[:50]
+                            if (doi_key and doi_key in used_dois) or title_key in used_titles:
+                                continue
+                            best = p
+                            break
+                    except Exception:
+                        best = fallback_ranked[0]
 
         if best:
             references[cid] = best
