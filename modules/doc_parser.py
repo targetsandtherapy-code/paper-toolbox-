@@ -82,13 +82,19 @@ class DocParser:
     )
 
     def extract_markers(self) -> list[CitationMarker]:
-        """提取文档正文中的引用角标（遇到「参考文献」标题后停止）"""
+        """提取文档正文中的引用角标（在最后一个「参考文献」标题处停止）"""
+        # 先找到最后一个「参考文献」标题的位置
+        last_ref_idx = -1
+        for i, para in enumerate(self.doc.paragraphs):
+            if self._REF_SECTION_HEADERS.match(para.text.strip()):
+                last_ref_idx = i
+
         markers = []
         for para_idx, para in enumerate(self.doc.paragraphs):
             text = para.text.strip()
             if not text:
                 continue
-            if self._REF_SECTION_HEADERS.match(text):
+            if para_idx == last_ref_idx:
                 break
 
             for match in MARKER_PATTERN.finditer(text):
