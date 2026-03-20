@@ -5,10 +5,20 @@ import tempfile
 from pathlib import Path
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
-sys.path.insert(0, str(Path(__file__).parent.parent))
+_project_root = str(Path(__file__).resolve().parent.parent)
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 import streamlit as st
-from modules.reference.main import process_paper
+import importlib
+try:
+    from modules.reference.main import process_paper
+except KeyError:
+    # Python 3.14 + Streamlit 热重载兼容：模块系统 KeyError 时清缓存重试
+    for k in list(sys.modules.keys()):
+        if k.startswith("modules.reference"):
+            del sys.modules[k]
+    from modules.reference.main import process_paper
 
 st.title("📚 论文参考文献智能生成")
 st.markdown(r"上传含角标（如 \[1\], \[2,3\], \[4-6\]）的 Word 文档，自动匹配真实学术论文并生成 GB/T 7714 格式参考文献列表。")
