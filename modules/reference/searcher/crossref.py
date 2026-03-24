@@ -15,7 +15,7 @@ class CrossRefSearcher(BaseSearcher):
             "filter": f"from-pub-date:{year_start},until-pub-date:{year_end}",
             "sort": "relevance",
             "order": "desc",
-            "select": "DOI,title,author,published-print,published-online,container-title,abstract,is-referenced-by-count",
+            "select": "DOI,title,author,published-print,published-online,container-title,abstract,is-referenced-by-count,volume,issue,page",
         }
 
         try:
@@ -61,6 +61,9 @@ class CrossRefSearcher(BaseSearcher):
                 abstract=abstract_raw or None,
                 citation_count=item.get("is-referenced-by-count"),
                 source=self.source_name,
+                volume=item.get("volume"),
+                issue=item.get("issue"),
+                pages=item.get("page"),
             ))
 
         return papers

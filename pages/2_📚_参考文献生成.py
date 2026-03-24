@@ -14,11 +14,12 @@ import importlib
 try:
     from modules.reference.main import process_paper
 except KeyError:
-    # Python 3.14 + Streamlit 热重载兼容：模块系统 KeyError 时清缓存重试
     for k in list(sys.modules.keys()):
         if k.startswith("modules.reference"):
             del sys.modules[k]
     from modules.reference.main import process_paper
+
+from modules.db import papers as papers_db, snapshots as snap_db
 
 st.title("📚 论文参考文献智能生成")
 st.markdown(r"上传含角标（如 \[1\], \[2,3\], \[4-6\]）的 Word 文档，自动匹配真实学术论文并生成 GB/T 7714 格式参考文献列表。")
@@ -26,9 +27,46 @@ st.markdown(r"上传含角标（如 \[1\], \[2,3\], \[4-6\]）的 Word 文档，
 if "stop_flag" not in st.session_state:
     st.session_state.stop_flag = False
 
+_uid = st.session_state.get("user_id")
+
+# ---------- 快照恢复：首次加载页面时用数据库中的值回填表单默认值 ----------
+_SNAP_KEY = snap_db.PAGE_REF_GEN
+_snap_loaded = st.session_state.get("_ref_snap_loaded", False)
+_snap_data: dict = {}
+if not _snap_loaded and _uid:
+    _snap_data = snap_db.load_snapshot(_uid, _SNAP_KEY) or {}
+    st.session_state._ref_snap_loaded = True
+
 col_left, col_right = st.columns([1, 3])
 
 with col_left:
+    # ------ 论文项目选择 / 新建 ------
+    if _uid:
+        with st.expander("📂 论文项目", expanded=False):
+            _projects = papers_db.list_projects(_uid)
+            _proj_names = ["（不关联项目）"] + [f"{p['title']}  [{p['category'] or '未分类'}]" for p in _projects]
+            _snap_proj_idx = 0
+            if _snap_data.get("project_id") and _projects:
+                for pi, pp in enumerate(_projects):
+                    if pp["id"] == _snap_data["project_id"]:
+                        _snap_proj_idx = pi + 1
+                        break
+            selected_proj = st.selectbox("选择已有论文", _proj_names, index=_snap_proj_idx, key="ref_project_sel")
+            _sel_proj_id = _projects[_proj_names.index(selected_proj) - 1]["id"] if selected_proj != "（不关联项目）" and _projects else None
+
+            with st.popover("➕ 新建论文项目"):
+                _np_title = st.text_input("论文标题", key="np_title")
+                _np_cat = st.text_input("分类（如：硕士论文、期刊论文）", key="np_cat")
+                if st.button("创建", key="np_create"):
+                    if _np_title.strip():
+                        papers_db.create_project(_uid, _np_title, _np_cat)
+                        st.success("已创建")
+                        st.rerun()
+                    else:
+                        st.error("请输入标题")
+    else:
+        _sel_proj_id = None
+
     st.subheader("输入设置")
 
     upload_tab, text_tab = st.tabs(["上传文档", "粘贴文本"])
@@ -44,27 +82,30 @@ with col_left:
     st.divider()
 
     paper_title_input = st.text_input("论文题目",
+        value=_snap_data.get("paper_title", ""),
         placeholder="例：正念训练对护理人员隐性缺勤影响机制研究",
         help="输入论文标题可大幅提升文献匹配的精准度")
 
     c1, c2 = st.columns(2)
     with c1:
-        year_start = st.number_input("起始年份", value=2021, min_value=2000, max_value=2026)
+        year_start = st.number_input("起始年份", value=_snap_data.get("year_start", 2021), min_value=2000, max_value=2026)
     with c2:
-        year_end = st.number_input("结束年份", value=2026, min_value=2000, max_value=2030)
+        year_end = st.number_input("结束年份", value=_snap_data.get("year_end", 2026), min_value=2000, max_value=2030)
 
-    cn_ratio_pct = st.slider("中文文献占比 (%)", min_value=0, max_value=100, value=25, step=5,
+    cn_ratio_pct = st.slider("中文文献占比 (%)", min_value=0, max_value=100,
+        value=_snap_data.get("cn_ratio_pct", 25), step=5,
         help="25% = 中英文 1:3 比例")
-    results_per = st.slider("每源检索数", min_value=1, max_value=10, value=5,
+    results_per = st.slider("每源检索数", min_value=1, max_value=10,
+        value=_snap_data.get("results_per", 5),
         help="增加可提高匹配质量，但会变慢")
 
-    fast_mode = st.checkbox("快速模式", value=True,
+    fast_mode = st.checkbox("快速模式", value=_snap_data.get("fast_mode", True),
         help="开启后 CNKI 少翻页，整体更快")
 
     citation_format = st.selectbox(
         "引用格式",
         ["GB/T 7714", "APA 7th", "MLA 9th"],
-        index=0,
+        index=_snap_data.get("citation_format_idx", 0),
         help="选择参考文献输出格式",
     )
 
@@ -72,9 +113,24 @@ with col_left:
         "最多处理角标数（0=全部）",
         min_value=0,
         max_value=500,
-        value=0,
+        value=_snap_data.get("max_markers", 0),
         help="按角标编号升序只处理前 N 个，用于试跑；0 表示不限制。",
     )
+
+    # 持久化表单快照
+    if _uid:
+        _cur_snap = {
+            "paper_title": paper_title_input,
+            "year_start": int(year_start),
+            "year_end": int(year_end),
+            "cn_ratio_pct": int(cn_ratio_pct),
+            "results_per": int(results_per),
+            "fast_mode": bool(fast_mode),
+            "citation_format_idx": ["GB/T 7714", "APA 7th", "MLA 9th"].index(citation_format),
+            "max_markers": int(max_markers_in),
+            "project_id": _sel_proj_id,
+        }
+        snap_db.save_snapshot(_uid, _SNAP_KEY, _cur_snap)
 
     btn_col1, btn_col2 = st.columns(2)
     with btn_col1:
@@ -129,16 +185,18 @@ with col_right:
 
             status_text.info(f"正在处理: {file_label}...")
 
-            def make_log_callback(lines_ref, log_widget):
+            import threading
+            _stop_event = threading.Event()
+            if st.session_state.stop_flag:
+                _stop_event.set()
+
+            def make_log_callback(lines_ref, log_widget, stop_ev):
                 def cb(msg):
-                    try:
-                        if st.session_state.stop_flag:
-                            raise InterruptedError("用户停止")
-                    except AttributeError:
-                        pass
+                    if stop_ev.is_set():
+                        raise InterruptedError("用户停止")
                     lines_ref.append(msg)
                     try:
-                        log_widget.code("\n".join(lines_ref[-20:]), language=None)
+                        log_widget.code("\n".join(lines_ref[-30:]), language=None)
                     except Exception:
                         pass
                 return cb
@@ -153,7 +211,7 @@ with col_right:
                         pass
                 return cb
 
-            log_cb = make_log_callback(log_lines, log_area)
+            log_cb = make_log_callback(log_lines, log_area, _stop_event)
             prog_cb = make_progress_callback(progress_bar, status_text)
 
             error = None

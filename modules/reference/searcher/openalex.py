@@ -68,6 +68,7 @@ class OpenAlexSearcher(BaseSearcher):
             abstract_index = item.get("abstract_inverted_index")
             abstract = self._reconstruct_abstract(abstract_index) if abstract_index else None
 
+            biblio = item.get("biblio") or {}
             papers.append(Paper(
                 title=item.get("display_name") or item.get("title", ""),
                 authors=authors,
@@ -78,6 +79,14 @@ class OpenAlexSearcher(BaseSearcher):
                 citation_count=item.get("cited_by_count"),
                 url=item.get("id"),
                 source=self.source_name,
+                volume=biblio.get("volume"),
+                issue=biblio.get("issue"),
+                pages=(
+                    f"{biblio['first_page']}-{biblio['last_page']}"
+                    if biblio.get("first_page") and biblio.get("last_page")
+                    and biblio["first_page"] != biblio["last_page"]
+                    else biblio.get("first_page")
+                ),
             ))
 
         return papers

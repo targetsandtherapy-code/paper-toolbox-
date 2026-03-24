@@ -15,7 +15,9 @@ class CitationMarker:
     raw_marker: str          # 原始角标文本，如 "[1]", "[1-3]"
 
 
-MARKER_PATTERN = re.compile(r'\[(\d+(?:\s*[-–—]\s*\d+)?(?:\s*[,，]\s*\d+)*)\]')
+MARKER_PATTERN = re.compile(
+    r'\[(\d+(?:\s*[-–—]\s*\d+)?(?:\s*[,，]\s*\d+(?:\s*[-–—]\s*\d+)?)*)\]'
+)
 
 
 def _expand_marker_ids(raw: str) -> list[int]:
@@ -81,20 +83,40 @@ class DocParser:
         r"^(参\s*考\s*文\s*献|references?|bibliography)\s*$", re.I
     )
 
+    def _iter_body_paragraphs(self):
+        """遍历主文档 body 子树内全部 ``w:p``，返回 (段落序号, 段落纯文本)。
+
+        使用 ``body.iter(w:p)`` 深度遍历，覆盖：
+        - 表格单元格内段落（含合并单元格等 python-docx ``Table.rows`` 无法完整展开的情况）；
+        - 内容控件 ``w:sdt``、嵌套块等下的段落。
+
+        不再按「body 直接子节点 + Table API」拼接，避免漏段导致角标数量偏少。
+        """
+        from docx.oxml.ns import qn
+
+        body = self.doc.element.body
+        idx = 0
+        for para in body.iter(qn("w:p")):
+            text = "".join(node.text or "" for node in para.iter(qn("w:t")))
+            yield idx, text
+            idx += 1
+
     def extract_markers(self) -> list[CitationMarker]:
-        """提取文档正文中的引用角标（在最后一个「参考文献」标题处停止）"""
-        # 先找到最后一个「参考文献」标题的位置
+        """提取文档正文中的引用角标（在最后一个「参考文献」标题处停止）。
+        同时扫描表格单元格中的段落。"""
+        all_paras: list[tuple[int, str]] = list(self._iter_body_paragraphs())
+
         last_ref_idx = -1
-        for i, para in enumerate(self.doc.paragraphs):
-            if self._REF_SECTION_HEADERS.match(para.text.strip()):
+        for i, (vidx, text) in enumerate(all_paras):
+            if self._REF_SECTION_HEADERS.match(text.strip()):
                 last_ref_idx = i
 
         markers = []
-        for para_idx, para in enumerate(self.doc.paragraphs):
-            text = para.text.strip()
+        for seq, (vidx, text) in enumerate(all_paras):
+            text = text.strip()
             if not text:
                 continue
-            if para_idx == last_ref_idx:
+            if seq == last_ref_idx:
                 break
 
             for match in MARKER_PATTERN.finditer(text):
@@ -108,7 +130,7 @@ class DocParser:
                     ids=ids,
                     paragraph_text=text,
                     context_before=context_before,
-                    paragraph_index=para_idx,
+                    paragraph_index=vidx,
                     raw_marker=raw_marker,
                 ))
 
@@ -124,25 +146,48 @@ class DocParser:
                     grouped[cid] = m
         return dict(sorted(grouped.items()))
 
-    _SKIP_TITLES = {"摘要", "摘  要", "abstract", "目录", "致谢", "参考文献", "附录", "关键词", "keywords"}
+    _SKIP_TITLES = {
+        "摘要", "摘  要", "abstract", "目录", "致谢", "参考文献", "附录",
+        "关键词", "keywords", "目  录",
+    }
+    _SKIP_TITLE_PATTERNS = re.compile(
+        r"^[（(]?\s*(硕\s*士\s*学\s*位\s*论\s*文|博\s*士\s*学\s*位\s*论\s*文|"
+        r"学\s*位\s*论\s*文|毕\s*业\s*论\s*文|专\s*业\s*学\s*位|学\s*术\s*学\s*位|"
+        r"master['\u2019]?s?\s*thesis|doctoral\s*dissertation|"
+        r"学\s*号|姓\s*名|导\s*师|指\s*导\s*教\s*师|专\s*业|学\s*院|"
+        r"研\s*究\s*生|学\s*位\s*类\s*别|学\s*科\s*门\s*类|"
+        r"分类号|密级|UDC|申请人|答辩日期|培养单位)\s*[)）]?\s*[:：]?\s*$",
+        re.I,
+    )
+
+    def _is_skip_title(self, text: str) -> bool:
+        normalized = text.lower().replace(" ", "").replace("\u3000", "")
+        if normalized in {s.replace(" ", "") for s in self._SKIP_TITLES}:
+            return True
+        if self._SKIP_TITLE_PATTERNS.match(text.strip()):
+            return True
+        stripped = re.sub(r"[（()）\s]", "", text)
+        if stripped in ("专业学位", "学术学位", "全日制", "非全日制", "在职"):
+            return True
+        return False
 
     def get_title(self) -> str:
         """提取论文标题（取前几个非空段落中最可能是标题的那个）"""
-        for para in self.doc.paragraphs[:15]:
+        for para in self.doc.paragraphs[:20]:
             text = para.text.strip()
             if not text or len(text) < 4:
                 continue
-            if text.lower().replace(" ", "") in {s.replace(" ", "") for s in self._SKIP_TITLES}:
+            if self._is_skip_title(text):
                 continue
             if MARKER_PATTERN.search(text):
                 continue
             if para.style and para.style.name and 'title' in para.style.name.lower():
                 return text
-        for para in self.doc.paragraphs[:15]:
+        for para in self.doc.paragraphs[:20]:
             text = para.text.strip()
-            if not text or len(text) < 6 or len(text) > 60:
+            if not text or len(text) < 6 or len(text) > 80:
                 continue
-            if text.lower().replace(" ", "") in {s.replace(" ", "") for s in self._SKIP_TITLES}:
+            if self._is_skip_title(text):
                 continue
             if MARKER_PATTERN.search(text):
                 continue

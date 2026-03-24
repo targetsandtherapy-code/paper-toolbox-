@@ -147,8 +147,22 @@ class ContentAnalyzer:
                 paper_title: str = "", max_retries: int = 3) -> AnalysisResult:
         title_hint = f"本论文标题：{paper_title}\n" if paper_title else ""
         ctx_line = f"角标所在句：{context_before}\n" if context_before else ""
+        topic_constraint = ""
+        if paper_title:
+            topic_constraint = f"""
+## 论文主题约束（最高优先级，必须遵守）
 
-        prompt = f"""{title_hint}论文段落（角标[{marker_id}]处需要找到被引文献）：
+本论文的题目是「{paper_title}」。
+
+**硬性规则**：search_query_cn 和 search_query_en 中 **必须** 至少包含一个本论文的核心疾病/人群/领域实体词。
+- 从论文标题中提取 1-2 个核心实体词（如疾病名、研究对象、核心变量），将其作为检索词的 **必选项**
+- 即使角标句在讨论通用机制（如免疫反应、炎症、血小板、凝血），search_query 也必须加上论文的核心疾病名
+- 示例：论文是关于「肺炎支原体」，角标句讨论「血小板聚集」→ search_query_cn 必须是「肺炎支原体 血小板」而不是「血小板 聚集能力 血栓」
+- 示例：论文是关于「护士隐性缺勤」，角标句讨论「心理资本」→ search_query_cn 必须是「护士 心理资本 隐性缺勤」而不是「心理资本 组织行为」
+- **违反此规则会导致搜索到完全无关的论文（如搜索「血小板 凝血」匹配到兽医学论文），这是不可接受的**
+"""
+
+        prompt = f"""{title_hint}{topic_constraint}论文段落（角标[{marker_id}]处需要找到被引文献）：
 {paragraph}
 
 {ctx_line}

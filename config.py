@@ -14,7 +14,8 @@ def _get_secret(key, default=""):
 
 
 # LLM 配置（通义千问，兼容 OpenAI 格式）
-QWEN_API_KEY = _get_secret("QWEN_API_KEY", "sk-81e555f2292c4305a53f8843884b36ab")
+# 须在环境变量或 .streamlit/secrets.toml 中配置，勿将真实密钥写入代码库
+QWEN_API_KEY = _get_secret("QWEN_API_KEY", "")
 QWEN_BASE_URL = _get_secret("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 QWEN_MODEL = _get_secret("QWEN_MODEL", "qwen-turbo")
 
@@ -44,6 +45,9 @@ REFERENCE_SEQUENTIAL_EN_SEARCH = _env_bool("REFERENCE_SEQUENTIAL_EN_SEARCH", Tru
 
 # 角标分配为中文库但未匹配时改试英文（反之亦然），提高覆盖率（设 0/false 关闭）
 REFERENCE_LANG_FALLBACK = _env_bool("REFERENCE_LANG_FALLBACK", True)
+
+# 最终补救：书名号判为中文且仅优先知网后仍无匹配时，是否再试 CrossRef/OpenAlex（设 0/false 关闭）
+REFERENCE_RESCUE_CN_FALLBACK_EN = _env_bool("REFERENCE_RESCUE_CN_FALLBACK_EN", True)
 
 # 政策宏观论点是否固定走中文库（专用路由）；默认关，与其它角标共用随机中英分配与跨语言降级
 REFERENCE_POLICY_CN_ONLY = _env_bool("REFERENCE_POLICY_CN_ONLY", False)

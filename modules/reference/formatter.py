@@ -68,9 +68,24 @@ def format_paper_gbt7714(index: int, paper: Paper) -> str:
     if paper.journal:
         parts.append(f" {paper.journal},")
     if paper.year:
-        parts.append(f" {paper.year}.")
-    elif paper.journal:
-        parts[-1] = parts[-1].rstrip(",") + "."
+        parts.append(f" {paper.year},")
+
+    vol = getattr(paper, "volume", None)
+    iss = getattr(paper, "issue", None)
+    pgs = getattr(paper, "pages", None)
+
+    if vol and iss:
+        parts.append(f"{vol}({iss})")
+    elif vol:
+        parts.append(f"{vol}")
+
+    if pgs:
+        parts.append(f":{pgs}.")
+    else:
+        if parts[-1].endswith(","):
+            parts[-1] = parts[-1].rstrip(",") + "."
+        elif not parts[-1].endswith("."):
+            parts.append(".")
 
     if paper.doi:
         parts.append(f" DOI: {paper.doi}.")
@@ -132,7 +147,19 @@ def format_reference_list_markdown(papers: dict[int, Paper]) -> str:
             if paper.journal:
                 entry += f"{paper.journal}, "
             if paper.year:
-                entry += f"{paper.year}. "
+                entry += f"{paper.year},"
+
+            vol = getattr(paper, "volume", None)
+            iss = getattr(paper, "issue", None)
+            pgs = getattr(paper, "pages", None)
+            if vol and iss:
+                entry += f"{vol}({iss})"
+            elif vol:
+                entry += f"{vol}"
+            if pgs:
+                entry += f":{pgs}. "
+            else:
+                entry = entry.rstrip(",") + ". "
 
             if paper.doi:
                 doi_url = f"https://doi.org/{paper.doi}"

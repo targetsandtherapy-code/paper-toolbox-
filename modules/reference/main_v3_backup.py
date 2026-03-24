@@ -4,21 +4,17 @@ import re
 import json
 import time
 import random
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-_root = str(Path(__file__).resolve().parent.parent.parent)
-if _root not in sys.path:
-    sys.path.insert(0, _root)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from config import (
     REFERENCE_LANG_FALLBACK,
     REFERENCE_NURSING_HARD_SCOPE,
     REFERENCE_POLICY_ALLOW_EN_FALLBACK,
     REFERENCE_POLICY_CN_ONLY,
-    REFERENCE_RESCUE_CN_FALLBACK_EN,
     REFERENCE_SEQUENTIAL_EN_SEARCH,
     REFERENCE_SKIP_DECOMPOSE_FOR_POLICY,
     REFERENCE_SKIP_POOL_FALLBACK,
@@ -49,7 +45,6 @@ from modules.reference.search_query_builder import (
     build_search_queries_from_analysis,
     rank_keywords_from_analysis,
 )
-from modules.db.claim_cache import get_cached_paper_for_claim, save_cached_match
 
 
 def _is_chinese_title(title: str) -> bool:
@@ -73,14 +68,6 @@ _IRRELEVANT_KEYWORDS = {
     "翻转课堂", "混合式教学", "OBE理念", "PBL教学", "课程建设",
     "教材", "慕课", "课堂教学", "教学质量", "教育评价",
 }
-
-_ANIMAL_VETERINARY_RE = re.compile(
-    r"\b(horses?|equine|bovine|cattle|calves|calf|goats?|sheep|swine|porcine|"
-    r"poultry|chickens?|canine|feline|piglets?|ewes?|heifers?|"
-    r"veterinary|dairy\s+goats?|dairy\s+cattle|feedlot)\b",
-    re.I,
-)
-_ANIMAL_CN_KEYWORDS = ("牛", "猪", "羊", "马", "鸡", "犬", "猫", "兽医", "畜牧", "肉牛", "奶牛")
 
 # 注入检索词用（中文）
 _NURSING_QUERY_MARKERS = ("护士", "护理", "医护", "医务人员", "护理人员")
@@ -175,10 +162,6 @@ def _paper_passes_content_scope(
     for kw in _IRRELEVANT_KEYWORDS:
         if kw in title:
             return False
-    if _ANIMAL_VETERINARY_RE.search(title):
-        return False
-    if any(kw in title for kw in _ANIMAL_CN_KEYWORDS):
-        return False
     if not scope_nursing:
         return True
     if target_lang == "cn":
@@ -304,94 +287,6 @@ def _ensure_nursing_query(query: str, target_lang: str, scope_nursing: bool) -> 
     if re.search(r"\b(nurse|nursing|midwif)\b", ql):
         return q
     return f"{q} nurse"
-
-
-@dataclass
-class TopicAnchors:
-    """论文主题锚定词（LLM 动态提取）"""
-    topic_cn: str = ""
-    topic_en: str = ""
-    population_cn: str = ""
-    population_en: str = ""
-
-
-def _extract_topic_entities(paper_title: str, analyzer=None) -> TopicAnchors:
-    """用 LLM 从论文标题动态提取核心主题词和人群词。"""
-    if not paper_title:
-        return TopicAnchors()
-
-    if analyzer is None:
-        from modules.reference.content_analyzer import ContentAnalyzer
-        analyzer = ContentAnalyzer()
-
-    prompt = f"""从以下论文标题中提取 **2个核心实体**，用于限定文献检索范围。
-
-论文标题：{paper_title}
-
-提取规则：
-1. **topic（核心主题）**：论文核心疾病名、核心变量名或研究对象。**只提取最核心的1个名词短语**，不超过6个字/3个英文单词。
-   - 例：肺炎支原体 → Mycoplasma pneumoniae（不要写成「儿童重症肺炎支原体肺炎」）
-   - 例：隐性缺勤 → presenteeism（注意：隐性缺勤=presenteeism，不是absenteeism）
-   - 例：深度学习 → deep learning
-   - 例：认知功能障碍 → cognitive dysfunction
-2. **population（人群）**：研究对象/人群，**只填1个词**。无明确人群则留空。
-   - 例：儿童 → children, 护士 → nurses, 老年患者 → elderly patients
-
-返回 JSON：
-{{
-  "topic_cn": "最短的中文核心词",
-  "topic_en": "shortest English term",
-  "population_cn": "人群词或空",
-  "population_en": "population or empty"
-}}"""
-
-    try:
-        import json
-        resp = analyzer.client.chat.completions.create(
-            model=analyzer.model,
-            messages=[
-                {"role": "system", "content": "你是学术检索专家，只返回 JSON。"},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=0.0,
-            response_format={"type": "json_object"},
-            extra_body={"enable_thinking": False},
-        )
-        data = json.loads(resp.choices[0].message.content.strip())
-        return TopicAnchors(
-            topic_cn=(data.get("topic_cn") or "").strip(),
-            topic_en=(data.get("topic_en") or "").strip(),
-            population_cn=(data.get("population_cn") or "").strip(),
-            population_en=(data.get("population_en") or "").strip(),
-        )
-    except Exception as e:
-        print(f"[TopicAnchors] LLM 提取失败: {e}")
-        return TopicAnchors()
-
-
-def _ensure_topic_query(query: str, target_lang: str,
-                        anchors: TopicAnchors, paper_title: str) -> str:
-    """检查搜索词是否包含论文核心主题词和人群词，缺失则注入。"""
-    if not query or not query.strip():
-        return query
-    q = query.strip()
-
-    if target_lang == "cn":
-        topic = anchors.topic_cn
-        pop = anchors.population_cn
-        if topic and topic not in q:
-            q = f"{q} {topic}"
-        if pop and pop not in q and pop not in (topic or ""):
-            q = f"{q} {pop}"
-    else:
-        ql = q.lower()
-        topic = anchors.topic_en
-        pop = anchors.population_en
-        if topic and topic.lower() not in ql:
-            q = f"{q} {topic}"
-        if pop and pop.lower() not in ql and pop.lower() not in (topic or "").lower():
-            q = f"{q} {pop}"
-    return q
 
 
 def _effective_cnki_pages(claim_type: str, base_pages: int, fast_mode: bool) -> int:
@@ -568,7 +463,6 @@ def process_paper(
     lf_on = (
         lang_fallback if lang_fallback is not None else REFERENCE_LANG_FALLBACK
     )
-    rescue_cn_en_fb = REFERENCE_RESCUE_CN_FALLBACK_EN
     skip_pool_fb = (
         skip_pool_fallback
         if skip_pool_fallback is not None
@@ -592,12 +486,7 @@ def process_paper(
 
     def log(msg):
         if callback:
-            try:
-                callback(msg)
-            except InterruptedError:
-                raise
-            except Exception:
-                pass
+            callback(msg)
         else:
             try:
                 print(msg)
@@ -613,10 +502,7 @@ def process_paper(
     grouped = parser.extract_markers_grouped()
     log(f"  论文标题: {paper_title}")
     full_marker_count = len(grouped)
-    log(
-        f"  发现 {full_marker_count} 个唯一角标编号（[1]、[2,3] 等同号只计一次）: "
-        f"{list(grouped.keys())}"
-    )
+    log(f"  发现 {full_marker_count} 个角标: {list(grouped.keys())}")
     if max_markers is not None and max_markers > 0 and full_marker_count > max_markers:
         take_ids = sorted(grouped.keys())[:max_markers]
         grouped = {k: grouped[k] for k in take_ids}
@@ -629,13 +515,20 @@ def process_paper(
     if not grouped:
         return {}, "", ""
 
-    # 语种分配：先由 LLM 推荐，预分析完成后按比例调整
+    # 预分配中英文角标（随机打散，1:3 = 每4篇1中3英）
     import math
     total = len(grouped)
-    target_cn = max(1, math.ceil(total * cn_ratio))
-    target_en = total - target_cn
-    lang_map: dict[int, str] = {k: "en" for k in grouped}  # 占位，预分析后覆盖
-    log(f"  目标比例: 中文{target_cn}篇 英文{target_en}篇")
+    cn_count = max(1, math.ceil(total * cn_ratio))
+    en_count = total - cn_count
+    lang_slots = ["cn"] * cn_count + ["en"] * en_count
+    random.shuffle(lang_slots)
+    marker_ids = list(grouped.keys())
+    lang_map = {marker_ids[i]: lang_slots[i] for i in range(total)}
+
+    cn_ids = [k for k, v in lang_map.items() if v == "cn"]
+    en_ids = [k for k, v in lang_map.items() if v == "en"]
+    log(f"  中文角标 ({len(cn_ids)}): {cn_ids}")
+    log(f"  英文角标 ({len(en_ids)}): {en_ids}")
 
     analyzer = ContentAnalyzer()
     crossref = CrossRefSearcher()
@@ -652,16 +545,6 @@ def process_paper(
     log(f"  领域: {field_info.get('field', '未知')}")
     log(f"  推荐中文核心: {len(cn_cores)} 个, 英文核心: {len(en_cores)} 个")
     all_field_cores = cn_cores | en_cores
-
-    log("Step 1.6: LLM 提取论文主题锚定词...")
-    topic_anchors = _extract_topic_entities(paper_title, analyzer)
-    if topic_anchors.topic_cn or topic_anchors.population_cn:
-        parts = []
-        if topic_anchors.topic_cn:
-            parts.append(f"主题={topic_anchors.topic_cn}/{topic_anchors.topic_en}")
-        if topic_anchors.population_cn:
-            parts.append(f"人群={topic_anchors.population_cn}/{topic_anchors.population_en}")
-        log(f"  [主题锚定] {', '.join(parts)}")
 
     scope_detect = _thesis_nursing_scope(paper_title)
     scope_nursing = scope_detect and nh_hard
@@ -722,37 +605,6 @@ def process_paper(
                 log(f"  [预分析] 角标[{_cid}] 失败: {_err}")
     log(f"  预分析完成: {len(analysis_cache)} 条缓存")
 
-    # Step 2.5: 用 LLM recommended_lang 填充 lang_map，再按 cn_ratio 调整
-    for cid in grouped:
-        ck = grouped[cid].context_before.strip()[:100]
-        ar = analysis_cache.get(ck)
-        if ar:
-            lang_map[cid] = getattr(ar, "recommended_lang", "en") or "en"
-        else:
-            lang_map[cid] = "en"
-
-    llm_cn = [k for k, v in lang_map.items() if v == "cn"]
-    llm_en = [k for k, v in lang_map.items() if v == "en"]
-    log(f"  LLM 推荐: 中文{len(llm_cn)}篇 英文{len(llm_en)}篇")
-
-    # 按 cn_ratio 调整：多退少补
-    if len(llm_cn) > target_cn:
-        excess = len(llm_cn) - target_cn
-        to_flip = random.sample(llm_cn, excess)
-        for k in to_flip:
-            lang_map[k] = "en"
-        log(f"  [比例调整] 中文超额{excess}篇→翻转为英文: {to_flip[:8]}{'…' if excess > 8 else ''}")
-    elif len(llm_cn) < target_cn:
-        deficit = target_cn - len(llm_cn)
-        to_flip = random.sample(llm_en, min(deficit, len(llm_en)))
-        for k in to_flip:
-            lang_map[k] = "cn"
-        log(f"  [比例调整] 中文不足{deficit}篇→从英文翻转: {to_flip[:8]}{'…' if deficit > 8 else ''}")
-
-    final_cn = [k for k, v in lang_map.items() if v == "cn"]
-    final_en = [k for k, v in lang_map.items() if v == "en"]
-    log(f"  最终分配: 中文{len(final_cn)}篇 英文{len(final_en)}篇")
-
     _parallel_search = 3
     log(f"Step 3: 检索匹配（{_parallel_search} 并发）…")
 
@@ -778,193 +630,455 @@ def process_paper(
 
         ct = getattr(analysis, "claim_type", None) or "status_quo"
         eff_pages = _effective_cnki_pages(ct, cnki_max_pages, fast_mode)
+        quote_src = quoted_title_source_lang(marker.context_before or "")
         ref_rt = resolve_ref_type_for_marker(analysis, marker.context_before or "")
         _rth = (getattr(analysis, "ref_type_hint", "") or "").strip()
-        rec_lang = getattr(analysis, "recommended_lang", None) or assigned_lang
-        log(
-            f"  ref_type: {ref_rt} | 分配: {'中' if assigned_lang == 'cn' else '英'} | "
-            f"LLM推荐: {'中' if rec_lang == 'cn' else '英'}"
-            + (f" — {_rth}" if _rth else "")
-        )
-
-        best = None
-        max_search_rounds = 5
-        match_round = 0
-        target_lang = assigned_lang
-
-        # --- 论点缓存：检索前先查 DB 是否已有命中 ---
-        _claim_for_cache = getattr(analysis, "key_claim", "") or ""
-        _cached_paper = get_cached_paper_for_claim(paper_title, _claim_for_cache)
-        if _cached_paper is not None:
-            with _dedup_lock:
-                _ck_doi = _cached_paper.doi.lower() if _cached_paper.doi else None
-                _ck_tk = _cached_paper.title.lower().strip()[:50]
-                if (_ck_doi and _ck_doi in used_dois) or _ck_tk in used_titles:
-                    pass
-                else:
-                    best = _cached_paper
-                    references[cid] = best
-                    if _ck_doi:
-                        used_dois.add(_ck_doi)
-                    used_titles.add(_ck_tk)
-            if best:
-                is_cn = _is_chinese_title(best.title)
-                elapsed = time.time() - marker_start
-                log(f"  [缓存命中] [{elapsed:.1f}s] {'[中]' if is_cn else '[英]'} {best.title[:55]}")
-                log(f"    DOI: {best.doi} | {best.journal} | {best.year}")
-                _append_reference_match_log(
-                    cid, _claim_for_cache, paper_title, "ok",
-                    best.title, best.journal or "", claim_type=ct,
+        log(f"  ref_type: {ref_rt}" + (f" — {_rth[:56]}…" if len(_rth) > 56 else (f" — {_rth}" if _rth else "")))
+        if quote_src == "cn":
+            _lang_attempts = ["cn"]
+            log("  [策略] 书名号《…》为中文题名：本角标仅使用知网等中文源（不请求英文学术库）")
+        elif quote_src == "en":
+            _lang_attempts = ["en"]
+            log("  [策略] 书名号《…》为英文题名：本角标仅使用英文学术库（不用知网）")
+        elif ct == "policy_macro" and pol_cn_only:
+            _lang_attempts = ["cn"]
+            if lf_on and pol_en_fb:
+                _lang_attempts.append("en")
+            log(
+                "  [策略] 政策宏观论点："
+                + ("仅中文库检索" if not pol_en_fb else "优先中文库，无果再试英文")
+                + "（忽略本角标随机中英分配）"
+            )
+        else:
+            _lang_attempts = lang_attempts_for_ref_type(
+                ref_rt, assigned_lang, lf_on, None
+            )
+            if ref_rt in ("R", "EB", "D"):
+                _le = (
+                    "；英文降级时精简英文源（无 PubMed）"
+                    if use_light_english_sources(ref_rt)
+                    else ""
                 )
-                return
+                log(f"  [策略] ref_type={ref_rt}：优先中文检索{_le}")
 
-        ctx_text = marker.context_before or ""
-        if ref_rt in ("R", "EB") and "《" in ctx_text and "》" in ctx_text:
-            from modules.reference.llm_ref_generator import try_web_search_for_quoted_title
-            log(f"  [策略] ref_type={ref_rt} + 《…》：直接搜网页")
-            best = try_web_search_for_quoted_title(ctx_text, ref_rt, analysis.key_claim or "")
-            if best:
-                log(f"  [DuckDuckGo] 命中: {best.title[:50]} | {best.url or ''}")
+        target_lang = assigned_lang
+        verify_meta: dict[str, str] = {"match_tier": ""}
+        best = None
 
-        lang_attempts: list[str] = [assigned_lang]
-        if lf_on:
-            _alt = "en" if assigned_lang == "cn" else "cn"
-            lang_attempts.append(_alt)
-
-        for att_i, try_lang in enumerate(lang_attempts):
+        for _li, target_lang in enumerate(_lang_attempts):
             if best is not None:
                 break
-            if att_i > 0:
+            if _li > 0:
                 log(
-                    f"  [跨语言降级] 分配为{'中文' if assigned_lang == 'cn' else '英文'}角标位但未匹配，"
-                    f"改试{'中文' if try_lang == 'cn' else '英文'}库…"
+                    f"  [降级] 分配为{'中文' if assigned_lang == 'cn' else '英文'}库无匹配，"
+                    f"改试{'英文' if target_lang == 'en' else '中文'}文献…"
                 )
+            verify_meta["match_tier"] = ""
+            all_candidates_pool: list[Paper] = []
 
-            def _do_search(query: str) -> list[Paper]:
-                """单轮搜索：根据 try_lang 选库。"""
-                cands: list[Paper] = []
-                if try_lang == "cn":
-                    _, rp = _search_cnki(
-                        cnki, query, year_start, year_end,
-                        results_per_source * 2, cn_cores, "CNKI",
-                        eff_pages,
-                    )
-                    if rp:
-                        log(f"    CNKI: {len(rp)}篇")
-                        cands.extend(rp)
-                else:
-                    light = use_light_english_sources(ref_rt)
-                    lim = min(results_per_source, 5) if light else results_per_source
-                    sources = [(openalex, "OpenAlex"), (crossref, "CrossRef")]
-                    if not light:
-                        sources.append((pubmed, "PubMed"))
-                    with ThreadPoolExecutor(max_workers=3) as pool:
-                        futs = [
-                            pool.submit(_search_source, s, query, year_start, year_end, lim, lbl)
-                            for s, lbl in sources
+            def _search_candidates(cn_q, en_q, pages_override: Optional[int] = None):
+                """执行搜索并返回候选列表（政策类英文降级为双源少条）。"""
+                pages = eff_pages if pages_override is None else pages_override
+                candidates = []
+                policy_en = target_lang == "en" and (
+                    ct == "policy_macro" or use_light_english_sources(ref_rt)
+                )
+                lim = min(results_per_source, 5) if policy_en else results_per_source
+                with ThreadPoolExecutor(max_workers=3) as pool:
+                    if target_lang == "cn":
+                        futures = [
+                            pool.submit(
+                                _search_cnki,
+                                cnki,
+                                cn_q,
+                                year_start,
+                                year_end,
+                                results_per_source * 2,
+                                cn_cores,
+                                "CNKI",
+                                pages,
+                            ),
                         ]
-                        for f in as_completed(futs):
-                            lbl, papers = f.result()
-                            if papers:
-                                log(f"    {lbl}: {len(papers)}篇")
-                                cands.extend(papers)
-                return cands
+                    else:
+                        if policy_en:
+                            futures = [
+                                pool.submit(_search_source, openalex, en_q, year_start, year_end, lim, "OpenAlex-EN"),
+                                pool.submit(_search_source, crossref, en_q, year_start, year_end, lim, "CrossRef-EN"),
+                            ]
+                        else:
+                            futures = [
+                                pool.submit(_search_source, openalex, en_q, year_start, year_end, lim, "OpenAlex-EN"),
+                                pool.submit(_search_source, pubmed, en_q, year_start, year_end, lim, "PubMed-EN"),
+                                pool.submit(_search_source, crossref, en_q, year_start, year_end, lim, "CrossRef-EN"),
+                            ]
+                    for f in as_completed(futures):
+                        label, papers = f.result()
+                        if papers:
+                            log(f"  {label}: {len(papers)}篇")
+                            candidates.extend(papers)
+                return candidates
 
-            def _pick_best(candidates: list[Paper]) -> Optional[Paper]:
-                """去重 + 过滤 + fast_rank + 轻量 LLM fit（前6名批量一次判断）。
+            def _try_verify_accept(candidates_list: list[Paper], cur_analysis) -> Optional[Paper]:
+                """硬过滤后批量 LLM fit，减少 API 次数；无题目时直接取首篇通过硬过滤的。"""
+                verify_meta["match_tier"] = ""
+                eligible: list[Paper] = []
+                for p in candidates_list:
+                    doi_key = p.doi.lower() if p.doi else None
+                    title_key = p.title.lower().strip()[:50]
+                    if doi_key and doi_key in used_dois:
+                        continue
+                    if title_key in used_titles:
+                        continue
+                    if not _paper_passes_content_scope(p, target_lang, scope_nursing):
+                        continue
+                    if (
+                        scope_nursing
+                        and target_lang == "en"
+                        and not _claim_allows_student_sample(cur_analysis.key_claim)
+                        and _title_is_nursing_student_study(p.title)
+                    ):
+                        continue
+                    eligible.append(p)
+                if not eligible:
+                    return None
+                if not paper_title:
+                    return eligible[0]
 
-                fit 通过 → 返回。fit 全否 → 返回 None（触发 refine 重搜）。
-                """
+                claim_u = cur_analysis.key_claim or ""
+                claim_ct = getattr(cur_analysis, "claim_type", None) or "status_quo"
+                sec_ct = getattr(cur_analysis, "secondary_claim_type", None) or ""
+                for start in range(0, len(eligible), verify_batch_size):
+                    chunk = eligible[start : start + verify_batch_size]
+                    fits = ranker.verify_fit_batch(
+                        marker.context_before,
+                        claim_u,
+                        chunk,
+                        paper_title,
+                        claim_type=claim_ct,
+                        secondary_claim_type=sec_ct,
+                    )
+                    deep_tried = 0
+                    for p, ok in zip(chunk, fits):
+                        if _heuristic_fit_veto(p, claim_u):
+                            log(f"  [启发否决] {p.title[:38]}...")
+                            continue
+                        heur_ok = _heuristic_fit_accept(p, claim_u, paper_title)
+                        if not ok and not heur_ok:
+                            continue
+                        if ok and paper_title and (marker.paragraph_text or "").strip():
+                            if _analysis_needs_deep_verify(cur_analysis) and deep_tried < 2:
+                                deep_tried += 1
+                                deep_ok = ranker.verify_fit_deep(
+                                    marker.paragraph_text,
+                                    marker.context_before,
+                                    claim_u,
+                                    p,
+                                    paper_title,
+                                    claim_type=claim_ct,
+                                    cache=deep_fit_cache,
+                                )
+                                if not deep_ok:
+                                    tier = ranker.verify_fit_mechanism_tier(
+                                        marker.paragraph_text,
+                                        marker.context_before,
+                                        claim_u,
+                                        p,
+                                        paper_title,
+                                        cache=mechanism_tier_cache,
+                                    )
+                                    if tier in ("exact", "relevant", "contextual"):
+                                        verify_meta["match_tier"] = tier
+                                        log(f"  [部分支撑:{tier}] {p.title[:38]}...")
+                                        return p
+                                    log(f"  [精校否] {p.title[:38]}...")
+                                    continue
+                            else:
+                                verify_meta["match_tier"] = "sufficient"
+                        return p
+                    for p, ok in zip(chunk, fits):
+                        if not ok and not _heuristic_fit_accept(p, claim_u, paper_title):
+                            log(f"  [fit否] 跳过: {p.title[:40]}...")
+                return None
+
+            def _filter_and_rank(
+                candidates, cur_analysis, min_score=5, skip_llm_rank: bool = False
+            ):
+                """去重 + 情境/人群过滤 + 排序 + fit 校验"""
                 candidates = deduplicate_papers(candidates)
                 candidates = [
                     p for p in candidates
                     if not (p.doi and p.doi.lower() in used_dois)
                     and p.title.lower().strip()[:50] not in used_titles
-                    and _paper_passes_content_scope(p, try_lang, scope_nursing)
+                    and _paper_passes_content_scope(p, target_lang, scope_nursing)
                 ]
-                if try_lang == "cn":
-                    lang_f = [p for p in candidates if _is_chinese_title(p.title)]
-                    candidates = lang_f or candidates
+
+                if target_lang == "cn":
+                    lang_filtered = [p for p in candidates if _is_chinese_title(p.title)]
+                    if not lang_filtered:
+                        lang_filtered = candidates
                 else:
-                    lang_f = [p for p in candidates if not _is_chinese_title(p.title)]
-                    candidates = lang_f or candidates
-                if not candidates:
+                    lang_filtered = [p for p in candidates if not _is_chinese_title(p.title)]
+                    if not lang_filtered:
+                        lang_filtered = candidates
+
+                if not lang_filtered:
                     return None
-                ranked = fast_rank(
+
+                all_kw = _rank_keywords_for_analysis(cur_analysis)
+                pre_ranked = fast_rank(
                     context=marker.context_before,
-                    keywords=_rank_keywords_for_analysis(analysis),
-                    candidates=candidates,
+                    keywords=all_kw,
+                    candidates=lang_filtered,
                     top_k=8,
                     field_cores=all_field_cores,
-                    claim=analysis.key_claim or "",
+                    claim=cur_analysis.key_claim or "",
                 )
-                if not ranked:
-                    return None
-                top_n = ranked[:6]
-                try:
-                    fits = ranker.verify_fit_batch(
-                        marker.context_before,
-                        analysis.key_claim or "",
-                        top_n,
-                        paper_title,
-                        claim_type=ct,
-                        secondary_claim_type=getattr(analysis, "secondary_claim_type", "") or "",
-                    )
-                    for p, ok in zip(top_n, fits):
-                        if ok:
-                            return p
-                    # fit 全否 → 返回 None 让外层 refine 重搜
-                    log(f"    fit 全否（{len(top_n)}篇）")
-                    return None
-                except Exception:
-                    return ranked[0]
+                # fast_rank 首位高分时直接 fit 验证，跳过 LLM rank 省一次 API
+                if pre_ranked and not skip_llm_rank:
+                    top_hit = _try_verify_accept(pre_ranked[:3], cur_analysis)
+                    if top_hit is not None:
+                        return top_hit
 
-            # 第一轮：检索轨道构建的检索词
-            _base_cn, _base_en = build_search_queries_from_analysis(analysis)
-            q = _base_cn if try_lang == "cn" else _base_en
-            if not q:
-                q = _base_en if try_lang == "cn" else _base_cn
-            q = _ensure_nursing_query(q, try_lang, scope_nursing)
-            q = _ensure_topic_query(q, try_lang, topic_anchors, paper_title)
-
-            tried_queries: list[str] = []
-            last_cands: list[Paper] = []
-            for round_i in range(max_search_rounds):
-                if best is not None:
-                    break
-                if not q or q in tried_queries:
-                    break
-                tried_queries.append(q)
-                log(f"  [轮{round_i+1}] 搜索: {q[:50]}")
-
-                cands = _do_search(q)
-                if cands:
-                    last_cands = cands
-                    best = _pick_best(cands)
-                    if best:
-                        target_lang = try_lang
-                        match_round = round_i + 1
-                        break
-
-                rejected_titles = [p.title[:60] for p in (cands or last_cands)[:6]]
-                log(
-                    f"  [轮{round_i+1}] 未命中"
-                    + (f"（搜到{len(cands)}篇但fit否）" if cands else "（0结果）")
-                )
-
-                if round_i < max_search_rounds - 1:
+                ranked: list[Paper] = []
+                if not skip_llm_rank:
                     try:
-                        new_cn, new_en = analyzer.refine_search(
-                            analysis, q, rejected_titles,
-                            target_lang=try_lang, paper_title=paper_title,
+                        ranked = ranker.rank(
+                            context=marker.context_before,
+                            claim=cur_analysis.key_claim,
+                            candidates=pre_ranked,
+                            top_k=max(top_k, 5),
+                            paper_title=paper_title,
+                            min_score=min_score,
                         )
-                        q = (new_cn if try_lang == "cn" else new_en) or ""
-                        q = _ensure_nursing_query(q, try_lang, scope_nursing)
-                        q = _ensure_topic_query(q, try_lang, topic_anchors, paper_title)
-                        if not q:
-                            q = (new_en if try_lang == "cn" else new_cn) or ""
                     except Exception:
-                        break
+                        ranked = []
+
+                order = ranked if ranked else pre_ranked[:8]
+                return _try_verify_accept(order, cur_analysis)
+
+            def _en_source_pairs(policy_en: bool):
+                if policy_en:
+                    return [(openalex, "OpenAlex-EN"), (crossref, "CrossRef-EN")]
+                return [(openalex, "OpenAlex-EN"), (crossref, "CrossRef-EN"), (pubmed, "PubMed-EN")]
+
+            def _search_en_sequential_and_try(
+                en_q: str, cur_analysis, min_score: float = 5
+            ) -> Optional[Paper]:
+                """英文库顺序检索：逐源拉取，单源内 fast_rank+fit，命中即停；皆不中则合并后再走完整 LLM 排序。"""
+                policy_en = (
+                    getattr(cur_analysis, "claim_type", None) == "policy_macro"
+                    or use_light_english_sources(ref_rt)
+                )
+                lim = min(results_per_source, 5) if policy_en else results_per_source
+                merged: list[Paper] = []
+                for searcher, label in _en_source_pairs(policy_en):
+                    _, papers = _search_source(
+                        searcher, en_q, year_start, year_end, lim, label
+                    )
+                    if papers:
+                        log(f"  {label}: {len(papers)}篇")
+                        merged.extend(papers)
+                        all_candidates_pool.extend(papers)
+                        b = _filter_and_rank(
+                            papers, cur_analysis, min_score=min_score, skip_llm_rank=True
+                        )
+                        if b is not None:
+                            log(f"  [顺序英文库] 已在 {label} 命中，未请求后续英文源")
+                            return b
+                if merged:
+                    log("  [顺序英文库] 各源单独未通过 fit，合并候选并重排…")
+                    return _filter_and_rank(
+                        merged, cur_analysis, min_score=min_score, skip_llm_rank=False
+                    )
+                return None
+
+            # === 第一轮：检索轨道（题名式）→ 政策类等再 enrich ===
+            _base_cn, _base_en = build_search_queries_from_analysis(analysis)
+            _cn_raw, _en_raw = _enrich_queries_for_claim_type(_base_cn, _base_en, ct)
+            _cn_raw, _en_raw = adjust_queries_for_ref_type(
+                _cn_raw, _en_raw, ref_rt, marker.context_before or ""
+            )
+            cn_q1 = _ensure_nursing_query(_cn_raw, "cn", scope_nursing)
+            en_q1 = _ensure_nursing_query(_en_raw, "en", scope_nursing)
+            if target_lang == "en" and seq_en:
+                best = _search_en_sequential_and_try(en_q1, analysis, min_score=5)
+            else:
+                cands1 = _search_candidates(cn_q1, en_q1)
+                all_candidates_pool.extend(cands1)
+                best = _filter_and_rank(cands1, analysis, min_score=5) if cands1 else None
+
+            # === 第二轮：LLM 宽泛关键词（尝试 broaden_query 返回的搜索词） ===
+            if not best:
+                log(f"  [重试] 宽泛关键词...")
+                try:
+                    broad = analyzer.broaden_query(analysis, paper_title=paper_title)
+                    _bb_cn, _bb_en = build_search_queries_from_analysis(broad)
+                    _bc, _be = _enrich_queries_for_claim_type(
+                        _bb_cn,
+                        _bb_en,
+                        getattr(broad, "claim_type", None) or ct,
+                    )
+                    _bc, _be = adjust_queries_for_ref_type(
+                        _bc, _be, ref_rt, marker.context_before or ""
+                    )
+                    broad_q_cn = _ensure_nursing_query(_bc, "cn", scope_nursing)
+                    broad_q_en = _ensure_nursing_query(_be, "en", scope_nursing)
+                    if target_lang == "en" and seq_en:
+                        best = _search_en_sequential_and_try(broad_q_en, broad, min_score=5)
+                    else:
+                        cands2 = _search_candidates(broad_q_cn, broad_q_en)
+                        all_candidates_pool.extend(cands2)
+                        best = (
+                            _filter_and_rank(cands2, broad, min_score=5) if cands2 else None
+                        )
+                except Exception:
+                    pass
+
+            # === 第2.5 轮：论点分解检索（多侧面子查询合并） ===
+            if not best:
+                if ct == "policy_macro" and REFERENCE_SKIP_DECOMPOSE_FOR_POLICY:
+                    log(
+                        "  [策略] 政策宏观论点：跳过论点分解检索"
+                        "（省 API，见 REFERENCE_SKIP_DECOMPOSE_FOR_POLICY）"
+                    )
+                elif should_skip_decompose_for_ref_type(ref_rt):
+                    log(
+                        f"  [策略] ref_type={ref_rt}：跳过论点分解检索（专著/报告/网络类控制轮次）"
+                    )
+                else:
+                    log(f"  [重试] 论点分解检索...")
+                    try:
+                        subs = analyzer.decompose_claim_for_search(
+                            analysis, paper_title=paper_title, target_lang=target_lang
+                        )
+                        for sub in subs:
+                            sq_cn = _ensure_nursing_query(sub.get("cn", ""), "cn", scope_nursing)
+                            sq_en = _ensure_nursing_query(sub.get("en", ""), "en", scope_nursing)
+                            sq_cn, sq_en = adjust_queries_for_ref_type(
+                                sq_cn, sq_en, ref_rt, marker.context_before or ""
+                            )
+                            if not sq_cn and not sq_en:
+                                continue
+                            if target_lang == "en" and seq_en:
+                                sub_en = sq_en or sq_cn or paper_title
+                                best = _search_en_sequential_and_try(
+                                    _ensure_nursing_query(sub_en, "en", scope_nursing),
+                                    analysis,
+                                    min_score=4,
+                                )
+                            else:
+                                c_sub = _search_candidates(
+                                    sq_cn or paper_title, sq_en or sq_cn or paper_title
+                                )
+                                all_candidates_pool.extend(c_sub)
+                                if c_sub:
+                                    best = _filter_and_rank(c_sub, analysis, min_score=4)
+                            if best:
+                                break
+                    except Exception:
+                        pass
+
+            # === 第三轮：用论文标题核心词 + 该角标的核心概念做搜索 ===
+            if not best:
+                if should_skip_domain_fallback(ref_rt):
+                    log(
+                        f"  [策略] ref_type={ref_rt}：跳过领域级宽泛检索（控制轮次与跑题）"
+                    )
+                else:
+                    log(f"  [重试] 领域级搜索...")
+                    core_word = (
+                        (analysis.ref_title_keywords_cn[0] if analysis.ref_title_keywords_cn else "")
+                        or (analysis.cn_keywords[0] if analysis.cn_keywords else "")
+                    )
+                    if target_lang == "cn":
+                        _fb_cn = _ensure_nursing_query(
+                            (core_word + " 护士") if core_word else paper_title,
+                            "cn",
+                            scope_nursing,
+                        )
+                        _fb_en = _fb_cn
+                    else:
+                        core_en = (
+                            (
+                                analysis.ref_title_keywords_en[0]
+                                if analysis.ref_title_keywords_en
+                                else ""
+                            )
+                            or (
+                                analysis.en_keywords[0]
+                                if analysis.en_keywords
+                                else "nursing"
+                            )
+                        )
+                        _fb_en = _ensure_nursing_query(
+                            core_en + " nurse", "en", scope_nursing
+                        )
+                        _fb_cn = _fb_en
+                    _fb_cn, _fb_en = adjust_queries_for_ref_type(
+                        _fb_cn, _fb_en, ref_rt, marker.context_before or ""
+                    )
+                    fallback_q = _fb_cn if target_lang == "cn" else _fb_en
+                    if target_lang == "en" and seq_en:
+                        best = _search_en_sequential_and_try(
+                            fallback_q, analysis, min_score=4
+                        )
+                    else:
+                        cands3 = _search_candidates(_fb_cn, _fb_en)
+                        all_candidates_pool.extend(cands3)
+                        best = (
+                            _filter_and_rank(cands3, analysis, min_score=4)
+                            if cands3
+                            else None
+                        )
+
+            # === 第四轮兜底：同一语种内从已累计候选池再排序+fit（与跨语言降级互补） ===
+            if not skip_pool_fb and not best and all_candidates_pool:
+                log(f"  [兜底] 从候选池选最佳...")
+                pool_deduped = deduplicate_papers(all_candidates_pool)
+                pool_deduped = [
+                    p for p in pool_deduped
+                    if not (p.doi and p.doi.lower() in used_dois)
+                    and p.title.lower().strip()[:50] not in used_titles
+                    and _paper_passes_content_scope(p, target_lang, scope_nursing)
+                ]
+                if target_lang == "cn":
+                    pool_lang = [p for p in pool_deduped if _is_chinese_title(p.title)]
+                    if not pool_lang:
+                        pool_lang = pool_deduped
+                else:
+                    pool_lang = [p for p in pool_deduped if not _is_chinese_title(p.title)]
+                    if not pool_lang:
+                        pool_lang = pool_deduped
+
+                if pool_lang:
+                    all_kw = _rank_keywords_for_analysis(analysis)
+                    fallback_ranked = fast_rank(
+                        context=marker.context_before,
+                        keywords=all_kw,
+                        candidates=pool_lang,
+                        top_k=8,
+                        field_cores=all_field_cores,
+                        claim=analysis.key_claim or "",
+                    )
+                    if fallback_ranked:
+                        try:
+                            llm_ranked = ranker.rank(
+                                context=marker.context_before,
+                                claim=analysis.key_claim,
+                                candidates=fallback_ranked,
+                                top_k=6,
+                                paper_title=paper_title,
+                                min_score=4,
+                            )
+                            merged = llm_ranked if llm_ranked else fallback_ranked
+                            best = _try_verify_accept(merged, analysis)
+                            if not best:
+                                best = _try_verify_accept(fallback_ranked, analysis)
+                        except Exception:
+                            best = _try_verify_accept(fallback_ranked, analysis)
+
+            if best:
+                break
 
         if best:
             with _dedup_lock:
@@ -985,7 +1099,7 @@ def process_paper(
                     f"  [降级命中] 使用{'英文' if target_lang == 'en' else '中文'}文献"
                     f"（原分配为{'中文' if assigned_lang == 'cn' else '英文'}角标位）"
                 )
-            log(f"  [OK] [{elapsed:.1f}s] [轮{match_round}] {'[中]' if is_cn else '[英]'} {best.title[:55]}")
+            log(f"  [OK] [{elapsed:.1f}s] {'[中]' if is_cn else '[英]'} {best.title[:55]}")
             rt = getattr(best, "reference_type", "J")
             if rt == "EB/OL":
                 log(f"    [EB/OL] {best.journal or ''} | {best.url or ''}")
@@ -1001,10 +1115,9 @@ def process_paper(
                 best.title,
                 best.journal or "",
                 claim_type=ct,
-                match_tier="",
+                match_tier=verify_meta.get("match_tier") or "",
                 claim_confidence=getattr(analysis, "claim_confidence", None),
             )
-            save_cached_match(paper_title, analysis.key_claim or "", best, "ok", ct)
         if not best:
             log(f"  [MISS] 无匹配")
             _append_reference_match_log(
@@ -1103,250 +1216,213 @@ def process_paper(
             rescue_pages = _effective_cnki_pages(miss_claim_ct, cnki_max_pages, fast_mode)
 
             quote_rescue = quoted_title_source_lang(marker.context_before or "")
-            base_rescue_lang = quote_rescue if quote_rescue else target_lang_m
+            rescue_lang = quote_rescue if quote_rescue else target_lang_m
             miss_ref_rt = (
                 resolve_ref_type_for_marker(miss_analysis, marker.context_before or "")
                 if miss_analysis
                 else "J"
             )
-            rescue_attempts: list[str] = [base_rescue_lang]
-            if (
-                quote_rescue == "cn"
-                and lf_on
-                and rescue_cn_en_fb
-                and "en" not in rescue_attempts
-            ):
-                rescue_attempts.append("en")
-
             if quote_rescue:
-                extra_hint = (
-                    "；若无合格文献将改试英文库"
-                    if len(rescue_attempts) > 1
-                    else ""
-                )
                 log(
                     f"  [补救] 书名号题名判定为{'中文' if quote_rescue == 'cn' else '英文'}，"
-                    f"补救优先{'知网' if quote_rescue == 'cn' else '英文库'}{extra_hint}"
+                    f"补救检索仅走{'知网' if quote_rescue == 'cn' else '英文库'}"
                 )
 
-            best_p = None
-            for attempt_i, rescue_lang in enumerate(rescue_attempts):
-                if attempt_i > 0:
-                    log(f"  [补救] 角标[{cid}] 知网路径未命中，改试英文库…")
-
-                # 用该角标自身的论点搜索，而不是泛领域词
-                if miss_analysis:
-                    _mr_cn, _mr_en = build_search_queries_from_analysis(miss_analysis)
-                    if rescue_lang == "cn":
-                        _rq0 = _ensure_nursing_query(_mr_cn, "cn", scope_nursing)
-                        _en_side = _mr_en or (
-                            miss_analysis.search_query_en
-                            or " ".join(miss_analysis.en_keywords[:2])
-                        )
-                        rescue_q, _ = adjust_queries_for_ref_type(
-                            _rq0,
-                            _en_side,
-                            miss_ref_rt,
-                            marker.context_before or "",
-                        )
-                        rescue_q = _ensure_nursing_query(rescue_q, "cn", scope_nursing)
-                        rescue_q2 = _ensure_nursing_query(paper_title, "cn", scope_nursing)
-                    else:
-                        _rqe0 = _ensure_nursing_query(_mr_en, "en", scope_nursing)
-                        _cn_side = _mr_cn or (
-                            miss_analysis.search_query_cn
-                            or " ".join(miss_analysis.cn_keywords[:2])
-                        )
-                        _, rescue_q = adjust_queries_for_ref_type(
-                            _cn_side,
-                            _rqe0,
-                            miss_ref_rt,
-                            marker.context_before or "",
-                        )
-                        rescue_q = _ensure_nursing_query(rescue_q, "en", scope_nursing)
-                        _e2tok = (
-                            list(miss_analysis.ref_title_keywords_en or [])[:2]
-                            + list(miss_analysis.en_keywords or [])[:2]
-                        )
-                        rescue_q2 = _ensure_nursing_query(
-                            (" ".join(_e2tok) + " nurse").strip()
-                            if _e2tok
-                            else "nurse",
-                            "en",
-                            scope_nursing,
-                        )
-                else:
-                    _ta_en = (
-                        " ".join(
-                            x
-                            for x in (
-                                topic_anchors.topic_en,
-                                topic_anchors.population_en,
-                            )
-                            if x
-                        ).strip()
-                    )
-                    rescue_q = (
-                        _ensure_nursing_query(paper_title, "cn", scope_nursing)
-                        if rescue_lang == "cn"
-                        else _ensure_nursing_query(
-                            _ta_en or (paper_title or "clinical"),
-                            "en",
-                            scope_nursing,
-                        )
-                    )
-                    rescue_q2 = rescue_q
-
-                rescue_cands: list[Paper] = []
-                for rq in [rescue_q, rescue_q2]:
-                    if not rq:
-                        continue
-                    try:
-                        if rescue_lang == "cn":
-                            _, rp = _search_cnki(
-                                cnki,
-                                rq,
-                                year_start,
-                                year_end,
-                                20,
-                                cn_cores,
-                                f"补救-{cid}",
-                                rescue_pages,
-                            )
-                        else:
-                            _, rp1 = _search_source(crossref, rq, year_start, year_end, 10, f"补救CR-{cid}")
-                            _, rp2 = _search_source(openalex, rq, year_start, year_end, 10, f"补救OA-{cid}")
-                            rp = (rp1 or []) + (rp2 or [])
-                        if rp:
-                            rescue_cands.extend(rp)
-                    except Exception:
-                        pass
-
-                rescue_cands = deduplicate_papers(rescue_cands)
-                available = [
-                    p for p in rescue_cands
-                    if not (p.doi and p.doi.lower() in used_dois)
-                    and p.title.lower().strip()[:50] not in used_titles
-                    and _paper_passes_content_scope(p, rescue_lang, scope_nursing)
-                ]
+            # 用该角标自身的论点搜索，而不是泛领域词
+            if miss_analysis:
+                _mr_cn, _mr_en = build_search_queries_from_analysis(miss_analysis)
                 if rescue_lang == "cn":
-                    lang_avail = [p for p in available if _is_chinese_title(p.title)]
-                    if lang_avail:
-                        available = lang_avail
-                else:
-                    lang_avail = [p for p in available if not _is_chinese_title(p.title)]
-                    if lang_avail:
-                        available = lang_avail
-
-                attempt_best = None
-                if available and miss_analysis:
-                    claim_u = miss_analysis.key_claim
-                    pre_res = fast_rank(
-                        context=marker.context_before,
-                        keywords=_rank_keywords_for_analysis(miss_analysis),
-                        candidates=available,
-                        top_k=12,
-                        field_cores=all_field_cores,
-                        claim=claim_u or "",
+                    _rq0 = _ensure_nursing_query(_mr_cn, "cn", scope_nursing)
+                    _en_side = _mr_en or (
+                        miss_analysis.search_query_en
+                        or " ".join(miss_analysis.en_keywords[:2])
                     )
-                    try:
-                        llm_res = ranker.rank(
-                            context=marker.context_before,
-                            claim=miss_analysis.key_claim,
-                            candidates=pre_res,
-                            top_k=8,
-                            paper_title=paper_title,
-                            min_score=3,
+                    rescue_q, _ = adjust_queries_for_ref_type(
+                        _rq0,
+                        _en_side,
+                        miss_ref_rt,
+                        marker.context_before or "",
+                    )
+                    rescue_q = _ensure_nursing_query(rescue_q, "cn", scope_nursing)
+                    rescue_q2 = _ensure_nursing_query(paper_title, "cn", scope_nursing)
+                else:
+                    _rqe0 = _ensure_nursing_query(_mr_en, "en", scope_nursing)
+                    _cn_side = _mr_cn or (
+                        miss_analysis.search_query_cn
+                        or " ".join(miss_analysis.cn_keywords[:2])
+                    )
+                    _, rescue_q = adjust_queries_for_ref_type(
+                        _cn_side,
+                        _rqe0,
+                        miss_ref_rt,
+                        marker.context_before or "",
+                    )
+                    rescue_q = _ensure_nursing_query(rescue_q, "en", scope_nursing)
+                    _e2tok = (
+                        list(miss_analysis.ref_title_keywords_en or [])[:2]
+                        + list(miss_analysis.en_keywords or [])[:2]
+                    )
+                    rescue_q2 = _ensure_nursing_query(
+                        (" ".join(_e2tok) + " nurse").strip()
+                        if _e2tok
+                        else "nurse",
+                        "en",
+                        scope_nursing,
+                    )
+            else:
+                rescue_q = (
+                    _ensure_nursing_query(paper_title, "cn", scope_nursing)
+                    if rescue_lang == "cn"
+                    else _ensure_nursing_query("mindfulness nursing presenteeism", "en", scope_nursing)
+                )
+                rescue_q2 = rescue_q
+
+            rescue_cands: list[Paper] = []
+            for rq in [rescue_q, rescue_q2]:
+                if not rq:
+                    continue
+                try:
+                    if rescue_lang == "cn":
+                        _, rp = _search_cnki(
+                            cnki,
+                            rq,
+                            year_start,
+                            year_end,
+                            20,
+                            cn_cores,
+                            f"补救-{cid}",
+                            rescue_pages,
                         )
-                    except Exception:
-                        llm_res = []
-                    order = llm_res if llm_res else pre_res
-                    eligible_r: list[Paper] = []
-                    for p in order:
-                        dk = p.doi.lower() if p.doi else None
-                        tk = p.title.lower().strip()[:50]
-                        if dk and dk in used_dois:
-                            continue
-                        if tk in used_titles:
-                            continue
-                        if not _paper_passes_content_scope(p, rescue_lang, scope_nursing):
-                            continue
-                        if (
-                            scope_nursing
-                            and rescue_lang == "en"
-                            and not _claim_allows_student_sample(claim_u)
-                            and _title_is_nursing_student_study(p.title)
-                        ):
-                            continue
-                        eligible_r.append(p)
-                    if eligible_r and paper_title:
-                        for start in range(0, len(eligible_r), verify_batch_size):
-                            chunk = eligible_r[start : start + verify_batch_size]
-                            fits = ranker.verify_fit_batch(
-                                marker.context_before,
-                                claim_u,
-                                chunk,
-                                paper_title,
-                                claim_type=miss_claim_ct,
-                                secondary_claim_type=miss_secondary,
-                            )
-                            for p, ok in zip(chunk, fits):
-                                if _heuristic_fit_veto(p, claim_u):
-                                    continue
-                                heur_ok = _heuristic_fit_accept(p, claim_u, paper_title)
-                                if not ok and not heur_ok:
-                                    continue
-                                if ok and paper_title and (marker.paragraph_text or "").strip():
-                                    if _analysis_needs_deep_verify(miss_analysis):
-                                        deep_ok = ranker.verify_fit_deep(
+                    else:
+                        _, rp1 = _search_source(crossref, rq, year_start, year_end, 10, f"补救CR-{cid}")
+                        _, rp2 = _search_source(openalex, rq, year_start, year_end, 10, f"补救OA-{cid}")
+                        rp = (rp1 or []) + (rp2 or [])
+                    if rp:
+                        rescue_cands.extend(rp)
+                except Exception:
+                    pass
+
+            rescue_cands = deduplicate_papers(rescue_cands)
+            available = [
+                p for p in rescue_cands
+                if not (p.doi and p.doi.lower() in used_dois)
+                and p.title.lower().strip()[:50] not in used_titles
+                and _paper_passes_content_scope(p, rescue_lang, scope_nursing)
+            ]
+            if rescue_lang == "cn":
+                lang_avail = [p for p in available if _is_chinese_title(p.title)]
+                if lang_avail:
+                    available = lang_avail
+            else:
+                lang_avail = [p for p in available if not _is_chinese_title(p.title)]
+                if lang_avail:
+                    available = lang_avail
+
+            best_p = None
+            if available and miss_analysis:
+                claim_u = miss_analysis.key_claim
+                pre_res = fast_rank(
+                    context=marker.context_before,
+                    keywords=_rank_keywords_for_analysis(miss_analysis),
+                    candidates=available,
+                    top_k=12,
+                    field_cores=all_field_cores,
+                    claim=claim_u or "",
+                )
+                try:
+                    llm_res = ranker.rank(
+                        context=marker.context_before,
+                        claim=miss_analysis.key_claim,
+                        candidates=pre_res,
+                        top_k=8,
+                        paper_title=paper_title,
+                        min_score=3,
+                    )
+                except Exception:
+                    llm_res = []
+                order = llm_res if llm_res else pre_res
+                eligible_r: list[Paper] = []
+                for p in order:
+                    dk = p.doi.lower() if p.doi else None
+                    tk = p.title.lower().strip()[:50]
+                    if dk and dk in used_dois:
+                        continue
+                    if tk in used_titles:
+                        continue
+                    if not _paper_passes_content_scope(p, rescue_lang, scope_nursing):
+                        continue
+                    if (
+                        scope_nursing
+                        and rescue_lang == "en"
+                        and not _claim_allows_student_sample(claim_u)
+                        and _title_is_nursing_student_study(p.title)
+                    ):
+                        continue
+                    eligible_r.append(p)
+                if eligible_r and paper_title:
+                    for start in range(0, len(eligible_r), verify_batch_size):
+                        chunk = eligible_r[start : start + verify_batch_size]
+                        fits = ranker.verify_fit_batch(
+                            marker.context_before,
+                            claim_u,
+                            chunk,
+                            paper_title,
+                            claim_type=miss_claim_ct,
+                            secondary_claim_type=miss_secondary,
+                        )
+                        for p, ok in zip(chunk, fits):
+                            if _heuristic_fit_veto(p, claim_u):
+                                continue
+                            heur_ok = _heuristic_fit_accept(p, claim_u, paper_title)
+                            if not ok and not heur_ok:
+                                continue
+                            if ok and paper_title and (marker.paragraph_text or "").strip():
+                                if _analysis_needs_deep_verify(miss_analysis):
+                                    deep_ok = ranker.verify_fit_deep(
+                                        marker.paragraph_text,
+                                        marker.context_before,
+                                        claim_u,
+                                        p,
+                                        paper_title,
+                                        claim_type=miss_claim_ct,
+                                        cache=deep_fit_cache,
+                                    )
+                                    if not deep_ok:
+                                        tier = ranker.verify_fit_mechanism_tier(
                                             marker.paragraph_text,
                                             marker.context_before,
                                             claim_u,
                                             p,
                                             paper_title,
-                                            claim_type=miss_claim_ct,
-                                            cache=deep_fit_cache,
+                                            cache=mechanism_tier_cache,
                                         )
-                                        if not deep_ok:
-                                            tier = ranker.verify_fit_mechanism_tier(
-                                                marker.paragraph_text,
-                                                marker.context_before,
-                                                claim_u,
-                                                p,
-                                                paper_title,
-                                                cache=mechanism_tier_cache,
+                                        if tier in ("exact", "relevant", "contextual"):
+                                            rescue_meta["match_tier"] = tier
+                                            log(
+                                                f"  [补救部分支撑:{tier}] {p.title[:40]}..."
                                             )
-                                            if tier in ("exact", "relevant", "contextual"):
-                                                rescue_meta["match_tier"] = tier
-                                                log(
-                                                    f"  [补救部分支撑:{tier}] {p.title[:40]}..."
-                                                )
-                                                attempt_best = p
-                                                break
-                                            if attempt_best:
-                                                break
-                                            continue
-                                    else:
-                                        rescue_meta["match_tier"] = "sufficient"
-                                attempt_best = p
-                                break
-                            if attempt_best:
-                                break
-                    elif eligible_r:
-                        attempt_best = eligible_r[0]
-                elif available:
-                    available.sort(
-                        key=lambda p: (
-                            2 if is_core_journal(p.journal or "") else 0,
-                            p.citation_count or 0,
-                        ),
-                        reverse=True,
-                    )
-                    attempt_best = available[0]
-
-                if attempt_best:
-                    best_p = attempt_best
-                    break
+                                            best_p = p
+                                            break
+                                        if best_p:
+                                            break
+                                        continue
+                                else:
+                                    rescue_meta["match_tier"] = "sufficient"
+                            best_p = p
+                            break
+                        if best_p:
+                            break
+                elif eligible_r:
+                    best_p = eligible_r[0]
+            elif available:
+                available.sort(
+                    key=lambda p: (
+                        2 if is_core_journal(p.journal or "") else 0,
+                        p.citation_count or 0,
+                    ),
+                    reverse=True,
+                )
+                best_p = available[0]
 
             if best_p:
                 references[cid] = best_p
@@ -1366,7 +1442,6 @@ def process_paper(
                         claim_type=miss_claim_ct,
                         match_tier=rescue_meta.get("match_tier") or "",
                     )
-                    save_cached_match(paper_title, miss_analysis.key_claim or "", best_p, "ok_rescue", miss_claim_ct)
             else:
                 log(f"  [补救失败] [{cid}]")
 

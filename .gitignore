@@ -8,3 +8,6 @@ venv/
 cnki_cookies.txt
 cnki_credentials.json
 logs/
+data/
+*.log
+modules/reference/1

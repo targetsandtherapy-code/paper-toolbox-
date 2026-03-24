@@ -13,6 +13,12 @@ try:
 except Exception:
     pass
 
+# 初始化数据库 & 认证（关闭页签后可通过 Cookie / URL 参数恢复会话）
+from modules.db.store import init_db
+init_db()
+from modules.auth_streamlit import ensure_authenticated
+ensure_authenticated()
+
 home = st.Page("pages/home.py", title="首页", icon="🎓", default=True)
 
 tools = [
