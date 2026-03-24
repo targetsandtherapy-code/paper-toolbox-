@@ -993,6 +993,7 @@ def process_paper(
 
             tried_queries: list[str] = []
             last_cands: list[Paper] = []
+            all_seen_cands: list[Paper] = []
             for round_i in range(max_search_rounds):
                 if best is not None:
                     break
@@ -1004,6 +1005,7 @@ def process_paper(
                 cands = _do_search(q)
                 if cands:
                     last_cands = cands
+                    all_seen_cands.extend(cands)
                     best = _pick_best(cands)
                     if best:
                         target_lang = try_lang
@@ -1029,6 +1031,28 @@ def process_paper(
                             q = (new_en if try_lang == "cn" else new_cn) or ""
                     except Exception:
                         break
+
+        if best is None and all_seen_cands:
+            pool = deduplicate_papers(all_seen_cands)
+            pool = [
+                p for p in pool
+                if not (p.doi and p.doi.lower() in used_dois)
+                and p.title.lower().strip()[:50] not in used_titles
+                and not _is_irrelevant_paper(p)
+            ]
+            if pool:
+                ranked_pool = fast_rank(
+                    context=marker.context_before,
+                    keywords=_rank_keywords_for_analysis(analysis),
+                    candidates=pool,
+                    top_k=3,
+                    field_cores=all_field_cores,
+                    claim=analysis.key_claim or "",
+                )
+                if ranked_pool:
+                    best = ranked_pool[0]
+                    match_round = -1
+                    log(f"  [强制兜底] 从候选池选取排名最高: {best.title[:45]}")
 
         if best:
             with _dedup_lock:
@@ -1412,6 +1436,11 @@ def process_paper(
                         reverse=True,
                     )
                     attempt_best = available[0]
+
+                if not attempt_best and eligible_r:
+                    attempt_best = eligible_r[0]
+                    rescue_meta["match_tier"] = "forced"
+                    log(f"  [补救强制兜底] fit全否，取排名最高: {attempt_best.title[:40]}")
 
                 if attempt_best:
                     best_p = attempt_best
