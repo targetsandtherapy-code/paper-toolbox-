@@ -499,14 +499,17 @@ class CNKISearcher(BaseSearcher):
                     len(all_papers), field_count, core_count - field_count, len(all_papers) - core_count)
         return all_papers[:limit]
 
-    def fetch_abstract(self, paper: Paper) -> Optional[str]:
-        """从 CNKI 详情页抓取摘要。"""
-        url = paper.url
+    def _fetch_one_abstract(self, url: str) -> Optional[str]:
+        """从单个 CNKI 详情页 URL 抓取摘要文本。"""
         if not url or "kcms2/article/abstract" not in url:
             return None
-        self._wait()
         try:
-            resp = self._session.get(
+            sess = requests.Session()
+            sess.verify = False
+            sess.proxies = {"http": None, "https": None}
+            sess.trust_env = False
+            sess.cookies.update(self._session.cookies)
+            resp = sess.get(
                 url,
                 timeout=12,
                 headers={
@@ -515,7 +518,6 @@ class CNKISearcher(BaseSearcher):
                     "Referer": CNKI_REFERER_URL,
                 },
             )
-            self._last_request_time = time.monotonic()
             if resp.status_code != 200:
                 return None
             soup = BeautifulSoup(resp.text, "lxml")
@@ -527,19 +529,34 @@ class CNKISearcher(BaseSearcher):
             logger.warning("[CNKI] 摘要抓取失败: %s", e)
             return None
 
+    def fetch_abstract(self, paper: Paper) -> Optional[str]:
+        """从 CNKI 详情页抓取摘要。"""
+        return self._fetch_one_abstract(paper.url)
+
     def fetch_abstracts_batch(self, papers: List[Paper], max_count: int = 8) -> int:
-        """为多篇论文批量抓取摘要（就地修改 paper.abstract）。
-        
-        仅对 abstract 为空且有 CNKI 详情 URL 的论文抓取。
+        """为多篇论文并行抓取摘要（就地修改 paper.abstract）。
+
+        每篇使用独立 session 以支持并发，3 线程并行。
         返回成功抓取数量。
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         need = [p for p in papers[:max_count] if not p.abstract and p.url]
         if not need:
             return 0
         ok = 0
-        for p in need:
-            abst = self.fetch_abstract(p)
-            if abst:
-                p.abstract = abst
-                ok += 1
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            fut_map = {
+                pool.submit(self._fetch_one_abstract, p.url): p
+                for p in need
+            }
+            for fut in as_completed(fut_map):
+                p = fut_map[fut]
+                try:
+                    abst = fut.result()
+                    if abst:
+                        p.abstract = abst
+                        ok += 1
+                except Exception:
+                    pass
         return ok
