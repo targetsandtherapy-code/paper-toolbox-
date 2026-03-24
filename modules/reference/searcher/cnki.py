@@ -539,6 +539,7 @@ class CNKISearcher(BaseSearcher):
         每篇使用独立 session 以支持并发，3 线程并行。
         返回成功抓取数量。
         """
+        self._ensure_cookie()
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         need = [p for p in papers[:max_count] if not p.abstract and p.url]

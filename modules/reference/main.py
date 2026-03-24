@@ -949,6 +949,16 @@ def process_paper(
                     candidates = lang_f or candidates
                 if not candidates:
                     return None
+                # 知网列表页无摘要：在 fast_rank / fit 之前预拉摘要，排序与判定均以摘要为主、标题为辅
+                if try_lang == "cn":
+                    prefetch = [
+                        p for p in candidates
+                        if getattr(p, "source", None) == "CNKI" and p.url and not p.abstract
+                    ][:16]
+                    if prefetch:
+                        got = cnki.fetch_abstracts_batch(prefetch, max_count=16)
+                        if got:
+                            log(f"    CNKI 预拉摘要: {got}/{len(prefetch)}篇（供排序与 fit）")
                 ranked = fast_rank(
                     context=marker.context_before,
                     keywords=_rank_keywords_for_analysis(analysis),

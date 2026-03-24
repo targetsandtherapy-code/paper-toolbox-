@@ -148,16 +148,22 @@ class RelevanceRanker:
             title_fit_hint = (
                 "\n（篇目会变：请结合**本题**题目中的人群、核心变量、是否含干预/机制等主干，判断文献与论点是否真匹配。）\n"
             )
+        abs_rule = ""
+        if abst.strip():
+            abs_rule = (
+                "\n**摘要优先**：摘要非空时，以摘要与论点的实质对应为准；"
+                "标题与论点字面不完全一致，但摘要讨论了同一疾病、机制、指标或人群时，应判 fit=true。\n"
+            )
         prompt = f"""你是学术引用审核专家。判断下面这篇文献是否适合作为引用，用来支撑「具体论点」。
 
 本论文题目：{paper_title or "（未提供）"}
-{title_fit_hint}角标所在句/段落（节选）：{context[:800]}
+{title_fit_hint}{abs_rule}角标所在句/段落（节选）：{context[:800]}
 需要支撑的论点：{claim}
 
 待选文献：
 - 标题：{paper.title}
 - 期刊：{paper.journal or "未知"}
-- 摘要（节选）：{abst}
+- 摘要（节选）：{abst or "（无）"}
 
 判定为 **不适合**（fit=false）的情况包括但不限于：
 - 研究对象与论点明显不符（例如论点写护士/护理人员，文献却是警察、普通大学生、酒店员工、患者/家属为主角等）
@@ -182,8 +188,8 @@ class RelevanceRanker:
                     {
                         "role": "system",
                         "content": (
-                            "你是严谨的引用审核专家。fit=true 仅当文献能直接背书论点中的断言，"
-                            "不能仅靠护理/健康大领域沾边。只返回 JSON。"
+                            "你是引用审核专家。有摘要时须核对摘要与论点是否实质对应，"
+                            "勿仅凭标题字面否定。明显无关再判 false。只返回 JSON。"
                         ),
                     },
                     {"role": "user", "content": prompt},
@@ -256,10 +262,13 @@ class RelevanceRanker:
 
         lines = []
         no_abstract_count = 0
+        has_abstract_count = 0
         for i, p in enumerate(papers):
-            abst = (p.abstract or "")[:320]
+            abst = (p.abstract or "")[:520]
             if not abst.strip():
                 no_abstract_count += 1
+            else:
+                has_abstract_count += 1
             lines.append(
                 f"【文献{i+1}】标题：{p.title}\n"
                 f"期刊：{p.journal or '未知'}\n摘要节选：{abst or '（无摘要）'}\n"
@@ -272,9 +281,14 @@ class RelevanceRanker:
         no_abstract_hint = ""
         if no_abstract_count > 0:
             no_abstract_hint = (
-                "\n**重要：部分候选文献无摘要（来自知网等中文数据库）。"
-                "对于无摘要的文献，请仅根据标题和期刊判断：**只要标题中的核心变量/疾病/主题与论点相关，"
-                "即可判 fit=true**。不要因为缺少摘要而倾向拒绝。\n"
+                "\n**无摘要的文献**：仅能依据标题与期刊判断；若标题中核心疾病/变量/人群与论点明显相关，可判 fit=true。\n"
+            )
+        abstract_first_hint = ""
+        if has_abstract_count > 0:
+            abstract_first_hint = (
+                "\n**摘要优先（极其重要）**：凡「摘要节选」非空的文献，**必须以摘要内容为主、标题为辅**判断是否与论点匹配。"
+                "临床医学常见情况：标题侧重某一亚组或结局，但摘要中明确讨论了论点中的机制、指标、人群或结论——此时应判 fit=true。"
+                "**不得**仅因标题措辞与论点字面不完全一致就判 fit=false，须先核对摘要是否实质支撑该论点。\n"
             )
 
         prompt = f"""本论文题目：{paper_title or "（未提供）"}
@@ -283,15 +297,15 @@ class RelevanceRanker:
 {ct_hint}
 
 以下共 {len(papers)} 篇候选，请逐篇判断是否适合作为该论点的引用依据。
-{no_abstract_hint}
+{abstract_first_hint}{no_abstract_hint}
 {block}
 
 对每篇文献输出 fit：true 表示可以合理支撑该论点；false 表示对象/变量/主题明显不符，或系编辑信件/CiteSpace 计量等非实质研究。
 
 **判断标准**：
-- 文献的核心主题（疾病、变量、研究对象）与论点讨论的主题有交叉即可判 fit=true
-- 不要求文献与论点逐句对应，只需主题相关且属于同一研究领域
-- 对于概念/定义/综述类论点（如疾病的定义、发病机制、临床特征），相关领域的综述或实证均可判 fit=true
+- **有摘要时**：摘要与论点在疾病、机制、指标、人群、结论任一方面实质相关即可判 fit=true
+- **无摘要时**：标题与期刊所示主题与论点有交叉即可判 fit=true
+- 不要求文献与论点逐句对应；概念/定义/机制/临床特征类论点，相关综述或实证均可判 fit=true
 - **书名号/人名**：论点含《…》则文献须能作为该书或该规范之依据；论点点名学者则文献须体现该学者相关工作，否则 fit=false
 
 只返回 JSON，fits 为长度 {len(papers)} 的布尔数组，顺序与文献编号一致：
@@ -304,8 +318,9 @@ class RelevanceRanker:
                     {
                         "role": "system",
                         "content": (
-                            "你是严谨的批量引用审核专家，宁缺毋滥；fits 长度必须与文献篇数一致。"
-                            "只返回 JSON。"
+                            "你是批量引用审核专家。候选含摘要时须以摘要与论点的实质对应为准，"
+                            "勿仅凭标题字面下结论。明显无关或非研究文献再判 false。"
+                            "fits 长度必须与文献篇数一致。只返回 JSON。"
                         ),
                     },
                     {"role": "user", "content": prompt},
