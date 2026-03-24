@@ -255,16 +255,27 @@ class RelevanceRanker:
             ]
 
         lines = []
+        no_abstract_count = 0
         for i, p in enumerate(papers):
             abst = (p.abstract or "")[:320]
+            if not abst.strip():
+                no_abstract_count += 1
             lines.append(
                 f"【文献{i+1}】标题：{p.title}\n"
-                f"期刊：{p.journal or '未知'}\n摘要节选：{abst}\n"
+                f"期刊：{p.journal or '未知'}\n摘要节选：{abst or '（无摘要）'}\n"
             )
         block = "\n".join(lines)
         ct_hint = self._batch_claim_type_hint(
             claim_type or "status_quo", secondary_claim_type or ""
         )
+
+        no_abstract_hint = ""
+        if no_abstract_count > 0:
+            no_abstract_hint = (
+                "\n**重要：部分候选文献无摘要（来自知网等中文数据库）。"
+                "对于无摘要的文献，请仅根据标题和期刊判断：**只要标题中的核心变量/疾病/主题与论点相关，"
+                "即可判 fit=true**。不要因为缺少摘要而倾向拒绝。\n"
+            )
 
         prompt = f"""本论文题目：{paper_title or "（未提供）"}
 角标所在句/段落（节选）：{context[:700]}
@@ -272,16 +283,16 @@ class RelevanceRanker:
 {ct_hint}
 
 以下共 {len(papers)} 篇候选，请逐篇判断是否适合作为该论点的引用依据。
-
+{no_abstract_hint}
 {block}
 
 对每篇文献输出 fit：true 表示可以合理支撑该论点；false 表示对象/变量/主题明显不符，或系编辑信件/CiteSpace 计量等非实质研究。
 
-**放宽**：若论点涉及隐性缺勤的概念、内涵、定义、研究进展、影响因素、现状等，且文献标题明确为护士/护理人员/医务人员与隐性缺勤的实证或综述，应判 fit=true。
-
-**政策类（claim 含二十大/健康中国/卫生人才队伍等）**：fit=true 须文献明显讨论**中国卫生政策、医改、人才队伍或同级战略话语**；**不得**仅凭「护士+健康」或食疗/学科设置类杂文即判 true。
-
-**书名号/人名**：论点含《…》则文献须能作为该书或该规范之依据；论点点名学者则文献须体现该学者相关工作，否则 fit=false。
+**判断标准**：
+- 文献的核心主题（疾病、变量、研究对象）与论点讨论的主题有交叉即可判 fit=true
+- 不要求文献与论点逐句对应，只需主题相关且属于同一研究领域
+- 对于概念/定义/综述类论点（如疾病的定义、发病机制、临床特征），相关领域的综述或实证均可判 fit=true
+- **书名号/人名**：论点含《…》则文献须能作为该书或该规范之依据；论点点名学者则文献须体现该学者相关工作，否则 fit=false
 
 只返回 JSON，fits 为长度 {len(papers)} 的布尔数组，顺序与文献编号一致：
 {{"fits": [true, false, ...]}}"""

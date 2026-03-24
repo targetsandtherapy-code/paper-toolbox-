@@ -371,25 +371,32 @@ def _extract_topic_entities(paper_title: str, analyzer=None) -> TopicAnchors:
 
 def _ensure_topic_query(query: str, target_lang: str,
                         anchors: TopicAnchors, paper_title: str) -> str:
-    """检查搜索词是否包含论文核心主题词和人群词，缺失则注入。"""
+    """检查搜索词是否包含论文核心主题词，缺失则注入。
+    
+    限制注入后总 token 数不超过 5，避免 CNKI 过严查询。
+    """
     if not query or not query.strip():
         return query
     q = query.strip()
+    token_count = len(q.split())
+    max_tokens = 5
 
     if target_lang == "cn":
         topic = anchors.topic_cn
         pop = anchors.population_cn
-        if topic and topic not in q:
+        if topic and topic not in q and token_count < max_tokens:
             q = f"{q} {topic}"
-        if pop and pop not in q and pop not in (topic or ""):
+            token_count += 1
+        if pop and pop not in q and pop not in (topic or "") and token_count < max_tokens - 1:
             q = f"{q} {pop}"
     else:
         ql = q.lower()
         topic = anchors.topic_en
         pop = anchors.population_en
-        if topic and topic.lower() not in ql:
+        if topic and topic.lower() not in ql and token_count < max_tokens:
             q = f"{q} {topic}"
-        if pop and pop.lower() not in ql and pop.lower() not in (topic or "").lower():
+            token_count += len(topic.split())
+        if pop and pop.lower() not in ql and pop.lower() not in (topic or "").lower() and token_count < max_tokens:
             q = f"{q} {pop}"
     return q
 
@@ -735,19 +742,47 @@ def process_paper(
     llm_en = [k for k, v in lang_map.items() if v == "en"]
     log(f"  LLM 推荐: 中文{len(llm_cn)}篇 英文{len(llm_en)}篇")
 
-    # 按 cn_ratio 调整：多退少补
+    def _cn_signal_score(cid_: int) -> float:
+        """角标的中文信号强度，越高越适合分配到中文。"""
+        ck_ = grouped[cid_].context_before.strip()[:100]
+        ar_ = analysis_cache.get(ck_)
+        score = 0.0
+        ctx_ = grouped[cid_].context_before or ""
+        if re.search(r"[\u4e00-\u9fff]{2,4}等(?:研究|发现|报道|认为|指出)?", ctx_):
+            score += 3.0
+        if "《" in ctx_ and "》" in ctx_:
+            score += 3.0
+        if re.search(r"我国|国内|中国|某(?:省|市|院|医院)", ctx_):
+            score += 2.0
+        if ar_:
+            ct_ = getattr(ar_, "claim_type", "") or ""
+            if ct_ in ("policy_macro", "concept_definition"):
+                score += 1.5
+            elif ct_ == "status_quo":
+                score += 0.5
+            cn_auth = any(
+                re.search(r"[\u4e00-\u9fff]", a or "")
+                for a in (getattr(ar_, "ref_authors", []) or [])
+            )
+            if cn_auth:
+                score += 2.5
+        return score
+
+    # 按 cn_ratio 调整：多退少补（智能选择）
     if len(llm_cn) > target_cn:
         excess = len(llm_cn) - target_cn
-        to_flip = random.sample(llm_cn, excess)
+        scored = sorted(llm_cn, key=_cn_signal_score)
+        to_flip = scored[:excess]
         for k in to_flip:
             lang_map[k] = "en"
-        log(f"  [比例调整] 中文超额{excess}篇→翻转为英文: {to_flip[:8]}{'…' if excess > 8 else ''}")
+        log(f"  [比例调整] 中文超额{excess}篇→翻转信号最弱的为英文: {to_flip[:8]}{'…' if excess > 8 else ''}")
     elif len(llm_cn) < target_cn:
         deficit = target_cn - len(llm_cn)
-        to_flip = random.sample(llm_en, min(deficit, len(llm_en)))
+        scored = sorted(llm_en, key=_cn_signal_score, reverse=True)
+        to_flip = scored[:min(deficit, len(scored))]
         for k in to_flip:
             lang_map[k] = "cn"
-        log(f"  [比例调整] 中文不足{deficit}篇→从英文翻转: {to_flip[:8]}{'…' if deficit > 8 else ''}")
+        log(f"  [比例调整] 中文不足{deficit}篇→翻转信号最强的为中文: {to_flip[:8]}{'…' if deficit > 8 else ''}")
 
     final_cn = [k for k, v in lang_map.items() if v == "cn"]
     final_en = [k for k, v in lang_map.items() if v == "en"]
@@ -841,7 +876,7 @@ def process_paper(
                 )
 
             def _do_search(query: str) -> list[Paper]:
-                """单轮搜索：根据 try_lang 选库。"""
+                """单轮搜索：根据 try_lang 选库。CNKI 空结果时自动缩词重试。"""
                 cands: list[Paper] = []
                 if try_lang == "cn":
                     _, rp = _search_cnki(
@@ -852,6 +887,30 @@ def process_paper(
                     if rp:
                         log(f"    CNKI: {len(rp)}篇")
                         cands.extend(rp)
+                    elif query.strip():
+                        tokens = query.strip().split()
+                        if len(tokens) > 3:
+                            short_q = " ".join(tokens[:3])
+                            log(f"    CNKI 0结果，缩词重试: {short_q}")
+                            _, rp2 = _search_cnki(
+                                cnki, short_q, year_start, year_end,
+                                results_per_source * 2, cn_cores, "CNKI-缩词",
+                                eff_pages,
+                            )
+                            if rp2:
+                                log(f"    CNKI(缩词): {len(rp2)}篇")
+                                cands.extend(rp2)
+                        if not cands and len(tokens) > 2:
+                            short_q2 = " ".join(tokens[:2])
+                            log(f"    CNKI 再缩词: {short_q2}")
+                            _, rp3 = _search_cnki(
+                                cnki, short_q2, year_start, year_end,
+                                results_per_source * 2, cn_cores, "CNKI-2词",
+                                eff_pages,
+                            )
+                            if rp3:
+                                log(f"    CNKI(2词): {len(rp3)}篇")
+                                cands.extend(rp3)
                 else:
                     light = use_light_english_sources(ref_rt)
                     lim = min(results_per_source, 5) if light else results_per_source

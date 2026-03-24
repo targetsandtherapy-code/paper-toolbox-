@@ -68,6 +68,54 @@ def infer_claim_type_from_text(key_claim: str, paper_title: str = "") -> str:
     return "status_quo"
 
 
+_CN_AUTHOR_RE = re.compile(
+    r"[\u4e00-\u9fff]{2,4}等(?:人)?(?:研究|发现|报道|报告|提出|认为|指出|调查|显示|表明)|"
+    r"[\u4e00-\u9fff]{2,4}(?:等)?(?:\[?\d)",
+)
+_EN_AUTHOR_RE = re.compile(
+    r"[A-Z][a-z]+\s+(?:[A-Z]\.?\s*)+(?:et\s+al\.?|等)|"
+    r"[A-Z][a-z]+\s+[A-Z]\b",
+)
+_CN_DOMESTIC_RE = re.compile(
+    r"我国|国内|中国|国家卫生|卫生健康委|某(?:省|市|院|医院)|"
+    r"(?:广[东西]|北京|上海|浙江|四川|湖[北南]|山[东西]|河[北南]|江[苏西]|"
+    r"福建|安徽|辽宁|云南|陕西|黑龙江|吉林|甘肃|贵州|新疆|内蒙|宁夏|青海|西藏|海南|重庆|天津)"
+)
+_EN_MECH_RE = re.compile(
+    r"\b(signaling|pathway|receptor|cytokine|interleukin|TNF|IFN|toll.like|NF.?κB|"
+    r"MAPK|JAK.STAT|PI3K|mTOR|apoptosis|necroptosis|pyroptosis|autophagy|"
+    r"meta.analysis|systematic\s+review|randomized|multicenter|cohort)\b",
+    re.I,
+)
+
+
+def _infer_lang_from_context(
+    context: str, claim: str, authors: list[str], paper_title: str
+) -> str:
+    """LLM 未给出明确 recommended_lang 时的启发式判断。"""
+    text = f"{context or ''} {claim or ''}"
+    if _CN_AUTHOR_RE.search(text):
+        return "cn"
+    if "《" in text and "》" in text:
+        return "cn"
+    if _CN_DOMESTIC_RE.search(text):
+        return "cn"
+    any_cn_author = any(
+        re.search(r"[\u4e00-\u9fff]", a or "") for a in (authors or [])
+    )
+    if any_cn_author:
+        return "cn"
+    if _EN_AUTHOR_RE.search(text):
+        return "en"
+    if _EN_MECH_RE.search(text):
+        return "en"
+    cn_chars = sum(1 for c in text if "\u4e00" <= c <= "\u9fff")
+    total = max(len(text), 1)
+    if cn_chars / total > 0.5:
+        return "cn"
+    return "en"
+
+
 def _coerce_str_list(val, max_items: int = 16) -> list[str]:
     """JSON 数组或单字符串 → 非空 str 列表。"""
     if val is None:
@@ -210,9 +258,16 @@ class ContentAnalyzer:
 **search_query_en**：用ref_title_keywords_en拼成，空格分隔，2-4个词
 **research_method**：研究方法
 **recommended_lang**：被引文献更可能是中文还是英文？
-  - `"cn"`：中文文献（如知网论文、中文专著、中国政策文件）
-  - `"en"`：英文文献（如SCI/SSCI期刊、英文专著）
-  - 判断依据：句中是否出现中文作者名、中文书名号、中国特有政策？角标句是在讨论中国本土现象还是国际研究？
+  - `"cn"`：中文文献（知网/万方期刊论文、中文专著、中国政策文件、中文学位论文）
+  - `"en"`：英文文献（PubMed/SCI/SSCI期刊、英文专著）
+  - 判断规则（**按优先级逐条检查**，命中即返回）：
+    1. 句中出现中文作者姓名（如"王某某等""李某等研究发现"）→ **必须** `"cn"`
+    2. 句中出现中文书名号《…》→ **必须** `"cn"`
+    3. 句中出现中国特有政策/指南/共识/规范 → **必须** `"cn"`
+    4. 句中出现中国本土数据线索（"我国""国内""中国""某省/市/医院""发病率为X%"等具体统计数据）→ **倾向** `"cn"`
+    5. 句中出现英文作者名（如"Zhang X等""Smith et al."）或英文研究名/量表名 → **倾向** `"en"`
+    6. **无明确线索时的默认规则**：本论文是中文学术论文，引用来源中英兼有。对于流行病学/临床现状/发病率/患病率/治疗方案/预后分析/护理等中国本土常见研究方向，倾向 `"cn"`；对于分子机制/信号通路/基础研究/国际多中心/系统综述/meta分析，倾向 `"en"`。
+  - **重要**：不要因为角标句使用了英文缩写（如MP、SMPP、CRP、IL-6等通用医学缩写）就判定为英文文献，中文论文也大量使用这些缩写
 
 严格返回 JSON，不要其他文字：
 {{
@@ -223,7 +278,7 @@ class ContentAnalyzer:
   "ref_population": [], "ref_method": [], "ref_year_hint": "", "ref_journal_hint": "",
   "cn_keywords": [], "en_keywords": [],
   "search_query_cn": "", "search_query_en": "",
-  "recommended_lang": "en"
+  "recommended_lang": ""
 }}"""
 
         import time as _time
@@ -289,6 +344,16 @@ class ContentAnalyzer:
                 ryh = str(data.get("ref_year_hint", "") or "").strip()
                 rjh = str(data.get("ref_journal_hint", "") or "").strip()
 
+                raw_lang = (data.get("recommended_lang") or "").strip().lower()
+                if raw_lang.startswith("cn") or raw_lang == "中文":
+                    rec_lang = "cn"
+                elif raw_lang.startswith("en") or raw_lang == "英文":
+                    rec_lang = "en"
+                else:
+                    rec_lang = _infer_lang_from_context(
+                        context_before, kc, ra, paper_title
+                    )
+
                 return AnalysisResult(
                     marker_id=marker_id,
                     core_topic=data.get("core_topic", ""),
@@ -311,12 +376,7 @@ class ContentAnalyzer:
                     ref_method=rmet,
                     ref_year_hint=ryh,
                     ref_journal_hint=rjh,
-                    recommended_lang=(
-                        "cn"
-                        if (data.get("recommended_lang") or "").strip().lower().startswith("cn")
-                        or (data.get("recommended_lang") or "").strip() == "中文"
-                        else "en"
-                    ),
+                    recommended_lang=rec_lang,
                 )
             except json.JSONDecodeError as e:
                 print(f"[ContentAnalyzer] JSON 解析失败: {e}")
