@@ -358,10 +358,17 @@ class CNKISearcher(BaseSearcher):
             return None
 
         title = ""
+        detail_url = ""
         for td in tds:
             if "name" in td.get("class", []):
                 link = td.find("a")
-                title = _clean_text(link.get_text()) if link else _clean_text(td.get_text())
+                if link:
+                    title = _clean_text(link.get_text())
+                    href = link.get("href", "")
+                    if href and "kcms2/article/abstract" in href:
+                        detail_url = href if href.startswith("http") else f"https://kns.cnki.net{href}"
+                else:
+                    title = _clean_text(td.get_text())
                 break
         if not title:
             for td in tds[1:]:
@@ -369,6 +376,9 @@ class CNKISearcher(BaseSearcher):
                 if link:
                     title = _clean_text(link.get_text())
                     if title:
+                        href = link.get("href", "")
+                        if href and "kcms2/article/abstract" in href:
+                            detail_url = href if href.startswith("http") else f"https://kns.cnki.net{href}"
                         break
 
         if not title:
@@ -414,6 +424,7 @@ class CNKISearcher(BaseSearcher):
             abstract=None,
             citation_count=None,
             source=self.source_name,
+            url=detail_url or None,
         )
 
     def _parse_authors(self, td: Tag) -> List[str]:
@@ -487,3 +498,48 @@ class CNKISearcher(BaseSearcher):
         logger.info("[CNKI] 共 %d 篇（领域核心 %d / 一般核心 %d / 普通 %d）",
                     len(all_papers), field_count, core_count - field_count, len(all_papers) - core_count)
         return all_papers[:limit]
+
+    def fetch_abstract(self, paper: Paper) -> Optional[str]:
+        """从 CNKI 详情页抓取摘要。"""
+        url = paper.url
+        if not url or "kcms2/article/abstract" not in url:
+            return None
+        self._wait()
+        try:
+            resp = self._session.get(
+                url,
+                timeout=12,
+                headers={
+                    "User-Agent": random.choice(USER_AGENTS),
+                    "Accept": "text/html,*/*;q=0.8",
+                    "Referer": CNKI_REFERER_URL,
+                },
+            )
+            self._last_request_time = time.monotonic()
+            if resp.status_code != 200:
+                return None
+            soup = BeautifulSoup(resp.text, "lxml")
+            el = soup.select_one("span#ChDivSummary") or soup.select_one("div#ChDivSummary")
+            if el:
+                return _clean_text(el.get_text())[:800]
+            return None
+        except Exception as e:
+            logger.warning("[CNKI] 摘要抓取失败: %s", e)
+            return None
+
+    def fetch_abstracts_batch(self, papers: List[Paper], max_count: int = 8) -> int:
+        """为多篇论文批量抓取摘要（就地修改 paper.abstract）。
+        
+        仅对 abstract 为空且有 CNKI 详情 URL 的论文抓取。
+        返回成功抓取数量。
+        """
+        need = [p for p in papers[:max_count] if not p.abstract and p.url]
+        if not need:
+            return 0
+        ok = 0
+        for p in need:
+            abst = self.fetch_abstract(p)
+            if abst:
+                p.abstract = abst
+                ok += 1
+        return ok

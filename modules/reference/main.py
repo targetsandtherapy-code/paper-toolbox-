@@ -960,6 +960,11 @@ def process_paper(
                 if not ranked:
                     return None
                 top_n = ranked[:6]
+                no_abs = [p for p in top_n if not p.abstract and p.source == "CNKI" and p.url]
+                if no_abs:
+                    fetched = cnki.fetch_abstracts_batch(no_abs, max_count=6)
+                    if fetched:
+                        log(f"    CNKI 摘要补充: {fetched}/{len(no_abs)}篇")
                 try:
                     fits = ranker.verify_fit_batch(
                         marker.context_before,
@@ -1339,6 +1344,11 @@ def process_paper(
                             continue
                         eligible_r.append(p)
                     if eligible_r and paper_title:
+                        _r_no_abs = [p for p in eligible_r[:8] if not p.abstract and p.source == "CNKI" and p.url]
+                        if _r_no_abs:
+                            _r_fetched = cnki.fetch_abstracts_batch(_r_no_abs, max_count=8)
+                            if _r_fetched:
+                                log(f"    补救-CNKI 摘要补充: {_r_fetched}/{len(_r_no_abs)}篇")
                         for start in range(0, len(eligible_r), verify_batch_size):
                             chunk = eligible_r[start : start + verify_batch_size]
                             fits = ranker.verify_fit_batch(
